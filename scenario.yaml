@@ -1,0 +1,43 @@
+seed: 42
+screenshot_sample_pct: 10
+
+authors:
+  count: 10
+  cms_split:
+    wordpress: 5
+    hugo: 5
+  articles_per_author: [5, 10]
+  ai_metadata_distribution:
+    None: 0.35
+    "Human+AI": 0.35
+    "AI-only": 0.30
+  malicious_profiles:
+    - malicious_pct: 0
+      weight: 0.7
+    - malicious_pct: 0.15
+      weight: 0.15
+    - malicious_pct: 1.0
+      weight: 0.15
+
+consumers:
+  count: 1000
+  trusted_authors: [0, 5]
+  visit_pct: [0.3, 0.8]
+  vote_probability: 0.4
+  batch_size: 20
+
+researcher:
+  enabled: true
+  detection_method: ground_truth
+  report_threshold: 0.8
+
+post_report_consumers: 50
+
+trust_server:
+  url: "http://trust-server:3000"
+  general_api_key: sim_general_key
+  admin_api_key: sim_admin_key
+
+ollama:
+  model: "llama3.2:3b"
+  host: "http://host.docker.internal:11434"
