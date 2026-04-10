@@ -1,0 +1,172 @@
+name: htmltrust
+
+networks:
+  htmltrust:
+    driver: bridge
+
+volumes:
+  mongo-data:
+  wp-db-data:
+  wp-1-data:
+  wp-2-data:
+  wp-3-data:
+  wp-4-data:
+  wp-5-data:
+
+services:
+
+  mongodb:
+    image: mongo:7
+    networks:
+      - htmltrust
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.runCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  trust-server:
+    build:
+      context: ../htmltrust-server-reference
+      dockerfile: ../htmltrust-e2e/Dockerfile.trust-server
+    networks:
+      - htmltrust
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/htmltrust
+      GENERAL_API_KEY: sim_general_key
+      ADMIN_API_KEY: sim_admin_key
+      PORT: "3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  wp-db:
+    image: mariadb:11
+    networks:
+      - htmltrust
+    volumes:
+      - wp-db-data:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  wp-1:
+    image: wordpress:6-php8.2-apache
+    networks:
+      - htmltrust
+    depends_on:
+      wp-db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: wp-db
+      WORDPRESS_DB_USER: root
+      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_NAME: wp1
+    volumes:
+      - wp-1-data:/var/www/html
+      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+
+  wp-2:
+    image: wordpress:6-php8.2-apache
+    networks:
+      - htmltrust
+    depends_on:
+      wp-db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: wp-db
+      WORDPRESS_DB_USER: root
+      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_NAME: wp2
+    volumes:
+      - wp-2-data:/var/www/html
+      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+
+  wp-3:
+    image: wordpress:6-php8.2-apache
+    networks:
+      - htmltrust
+    depends_on:
+      wp-db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: wp-db
+      WORDPRESS_DB_USER: root
+      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_NAME: wp3
+    volumes:
+      - wp-3-data:/var/www/html
+      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+
+  wp-4:
+    image: wordpress:6-php8.2-apache
+    networks:
+      - htmltrust
+    depends_on:
+      wp-db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: wp-db
+      WORDPRESS_DB_USER: root
+      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_NAME: wp4
+    volumes:
+      - wp-4-data:/var/www/html
+      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+
+  wp-5:
+    image: wordpress:6-php8.2-apache
+    networks:
+      - htmltrust
+    depends_on:
+      wp-db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: wp-db
+      WORDPRESS_DB_USER: root
+      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_NAME: wp5
+    volumes:
+      - wp-5-data:/var/www/html
+      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+
+  nginx:
+    image: nginx:alpine
+    networks:
+      htmltrust:
+        aliases:
+          - author1.htmltrust.test
+          - author2.htmltrust.test
+          - author3.htmltrust.test
+          - author4.htmltrust.test
+          - author5.htmltrust.test
+          - author6.htmltrust.test
+          - author7.htmltrust.test
+          - author8.htmltrust.test
+          - author9.htmltrust.test
+          - author10.htmltrust.test
+    depends_on:
+      - wp-1
+      - wp-2
+      - wp-3
+      - wp-4
+      - wp-5
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./hugo-sites:/var/www/hugo:ro
