@@ -7,7 +7,7 @@ import type { ResearcherReport } from "./researcher.js";
 export async function runPhase4(
   config: ScenarioConfig, authors: AuthorProfile[], articles: Article[],
   allConsumers: ConsumerProfile[], prevLogs: SessionLog[], reports: ResearcherReport[],
-  extensionPath: string, e2eDir: string
+  trustServerUrl: string, e2eDir: string
 ): Promise<{ result: PhaseResult; sessionLogs: SessionLog[] }> {
   const errors: string[] = [];
   const start = Date.now();
@@ -27,7 +27,7 @@ export async function runPhase4(
   for (let i = 0; i < selected.length; i += config.consumers.batch_size) {
     const batch = selected.slice(i, i + config.consumers.batch_size);
     const results = await Promise.allSettled(batch.map((c) =>
-      runConsumerSession({ consumer: c, authors, articles, extensionPath, screenshotDir: ssDir })
+      runConsumerSession({ consumer: c, authors, articles, trustServerUrl, screenshotDir: ssDir })
     ));
     for (const r of results) {
       if (r.status === "fulfilled") sessionLogs.push(r.value);

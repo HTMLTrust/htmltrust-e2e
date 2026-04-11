@@ -156,6 +156,24 @@ services:
       - wp-5-data:/var/www/html
       - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
 
+  # Playwright container: runs on demand via `docker compose run playwright`
+  # Resolves *.htmltrust.test via Docker DNS, no host state needed
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.59.1-jammy
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - ../htmltrust-browser-reference/build/chromium:/extension:ro
+    networks:
+      - htmltrust
+    environment:
+      E2E_DIR: /workspace
+      EXTENSION_PATH: /extension
+      NPM_CONFIG_CACHE: /tmp/.npm
+    # Override default command so the container stays idle; we launch scripts via `docker compose run`
+    entrypoint: ["sleep", "infinity"]
+    profiles: ["tools"]  # Only starts when explicitly requested
+
   nginx:
     image: nginx:alpine
     networks:

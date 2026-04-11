@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { normalizeText } from "@htmltrust/canonicalization";
 import { generateArticle } from "../lib/ollama.js";
 import { HugoPublisher } from "../lib/hugo-publisher.js";
@@ -139,14 +139,43 @@ export async function runPhase2(
         await mkdir(outDir, { recursive: true });
         await hugoPub.build(outDir);
 
+        // Post-build: for each rendered article, read the HTML, extract the Hugo-computed
+        // content-hash, sign it via the trust server, and inject the signature attributes.
+        // This ensures the signature matches the hash that's actually in the rendered page.
         for (const article of tracker.getArticlesForAuthor(author.id)) {
-          const hash = article.contentHash || computeContentHash(article.content);
+          const slugMatch = article.id.match(/article-(\d+)$/);
+          if (!slugMatch) continue;
+          const htmlPath = path.join(outDir, "posts", `article-${slugMatch[1]}`, "index.html");
+          let html: string;
+          try {
+            html = await readFile(htmlPath, "utf-8");
+          } catch {
+            errors.push(`Rendered HTML not found for ${article.id}: ${htmlPath}`);
+            continue;
+          }
+
+          // Extract the content-hash that Hugo wrote into the signed-section
+          const hashMatch = html.match(/<signed-section[^>]*content-hash=["']?(sha256:[a-f0-9]{64})["']?/);
+          if (!hashMatch) {
+            errors.push(`No content-hash found in ${htmlPath}`);
+            continue;
+          }
+          const renderedHash = hashMatch[1];
+
+          // Sign that exact hash
           const sig = await trustClient.signContent(author.authorApiKey, {
-            contentHash: hash,
-            domain: author.domain, claims: article.declaredMetadata as unknown as Record<string, string>,
+            contentHash: renderedHash,
+            domain: author.domain,
+            claims: article.declaredMetadata as unknown as Record<string, string>,
           });
+
+          // Rewrite the signed-section to include signature/keyid/algorithm
+          const newTag = `<signed-section signature="${sig.signature}" keyid="http://trust-server:3000/api/authors/${author.id}/public-key" algorithm="ed25519" content-hash="${renderedHash}" style="display: block;">`;
+          const newHtml = html.replace(/<signed-section[^>]*>/, newTag);
+          await writeFile(htmlPath, newHtml);
+
           article.signature = sig.signature;
-          article.contentHash = hash;
+          article.contentHash = renderedHash;
         }
       } catch (err) {
         errors.push(`Hugo build failed for ${author.name}: ${err}`);
