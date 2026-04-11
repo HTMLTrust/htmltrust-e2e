@@ -30,8 +30,8 @@ services:
 
   trust-server:
     build:
-      context: ../htmltrust-server-reference
-      dockerfile: ../htmltrust-e2e/Dockerfile.trust-server
+      context: ..
+      dockerfile: htmltrust-e2e/Dockerfile.trust-server
     networks:
       - htmltrust
     depends_on:
@@ -42,8 +42,10 @@ services:
       GENERAL_API_KEY: sim_general_key
       ADMIN_API_KEY: sim_admin_key
       PORT: "3000"
+    ports:
+      - "3000:3000"
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -65,7 +67,9 @@ services:
       start_period: 20s
 
   wp-1:
-    image: wordpress:6-php8.2-apache
+    build:
+      context: .
+      dockerfile: Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:
@@ -81,7 +85,9 @@ services:
       - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
 
   wp-2:
-    image: wordpress:6-php8.2-apache
+    build:
+      context: .
+      dockerfile: Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:
@@ -97,7 +103,9 @@ services:
       - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
 
   wp-3:
-    image: wordpress:6-php8.2-apache
+    build:
+      context: .
+      dockerfile: Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:
@@ -113,7 +121,9 @@ services:
       - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
 
   wp-4:
-    image: wordpress:6-php8.2-apache
+    build:
+      context: .
+      dockerfile: Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:
@@ -129,7 +139,9 @@ services:
       - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
 
   wp-5:
-    image: wordpress:6-php8.2-apache
+    build:
+      context: .
+      dockerfile: Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:

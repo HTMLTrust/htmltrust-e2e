@@ -1,0 +1,183 @@
+/**
+ * Smoke test: runs Phase 1 (partial) and Phase 2 against a live Docker stack.
+ * Assumes `docker compose up -d` has already been run.
+ * Usage: node --import tsx src/smoke-test.ts [scenario.yaml]
+ */
+import path from "node:path";
+import * as http from "node:http";
+import { fileURLToPath } from "node:url";
+import { loadScenario, generateAuthorProfiles } from "./lib/scenario.js";
+import { TrustApiClient } from "./lib/trust-api.js";
+import { GroundTruthTracker } from "./lib/ground-truth.js";
+import { composeExec } from "./lib/docker.js";
+import { generateNginxConfig } from "./lib/nginx-config.js";
+import { runPhase2 } from "./phases/publish.js";
+
+async function rawHttpGet(
+  proxyHost: string,
+  proxyPort: number,
+  siteHost: string,
+  reqPath: string,
+  maxRedirects = 5
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: proxyHost, port: proxyPort, path: reqPath, method: "GET", headers: { Host: siteHost } },
+      async (res) => {
+        // Follow redirects with Host header preserved
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && maxRedirects > 0) {
+          res.resume(); // drain
+          try {
+            const loc = res.headers.location;
+            const nextPath = loc.startsWith("http")
+              ? new URL(loc).pathname + new URL(loc).search
+              : loc;
+            const result = await rawHttpGet(proxyHost, proxyPort, siteHost, nextPath, maxRedirects - 1);
+            resolve(result);
+          } catch (err) {
+            reject(err);
+          }
+          return;
+        }
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => resolve({ status: res.statusCode || 0, body: data }));
+      }
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const E2E_DIR = path.resolve(__dirname, "..");
+
+async function main(): Promise<void> {
+  const scenarioPath = process.argv[2] || path.join(E2E_DIR, "scenario-small.yaml");
+  console.log(`\nSmoke Test\nScenario: ${scenarioPath}\n`);
+
+  const config = await loadScenario(scenarioPath);
+  const authors = generateAuthorProfiles(config);
+  const tracker = new GroundTruthTracker(config.seed);
+
+  // Generate nginx.conf from the scenario and reload nginx
+  console.log("=== Regenerating nginx.conf ===");
+  await generateNginxConfig(authors, path.join(E2E_DIR, "nginx.conf"));
+  await composeExec(E2E_DIR, "nginx", ["nginx", "-s", "reload"]);
+  console.log("  nginx reloaded\n");
+
+  const client = new TrustApiClient(
+    config.trust_server.url,
+    config.trust_server.general_api_key,
+    config.trust_server.admin_api_key
+  );
+
+  // --- Phase 1 (manual, since Docker is already running) ---
+  console.log("=== Phase 1: Setup ===");
+
+  // Create claim types
+  for (const claim of [
+    { name: "ContentType", description: "Type of content", possibleValues: ["Article", "Opinion", "News"] },
+    { name: "License", description: "Content license", possibleValues: ["MIT", "CC-BY-4.0", "All Rights Reserved"] },
+    { name: "AIAssistance", description: "AI involvement", possibleValues: ["None", "Human+AI", "AI-only"] },
+  ]) {
+    try { await client.createClaimType(claim); } catch { /* may already exist */ }
+  }
+  console.log("  Claim types created");
+
+  // Create authors
+  for (const author of authors) {
+    const result = await client.createAuthor({
+      name: author.name,
+      keyType: "HUMAN",
+      keyAlgorithm: "ED25519",
+      description: `${author.cmsType} author`,
+      url: `http://${author.domain}`,
+    });
+    author.id = result.author.id;
+    author.authorApiKey = result.authorApiKey;
+    const pubKey = await client.getAuthorPublicKey(author.id);
+    author.keyId = pubKey.id;
+    console.log(`  ${author.name} (${author.cmsType}, mal=${author.malicious_pct}) -> ${author.id}`);
+  }
+
+  // Create WP databases + install
+  const wpAuthors = authors.filter((a) => a.cmsType === "wordpress");
+  for (let i = 0; i < wpAuthors.length; i++) {
+    try {
+      await composeExec(E2E_DIR, "wp-db", ["mariadb", "-uroot", "-prootpass", "-e", `CREATE DATABASE IF NOT EXISTS wp${i + 1};`]);
+      const c = wpAuthors[i].wpContainerName!;
+      // Wait a bit for WP to be ready
+      await new Promise((r) => setTimeout(r, 3000));
+      await composeExec(E2E_DIR, c, [
+        "wp", "core", "install",
+        `--url=http://${wpAuthors[i].domain}`,
+        `--title=${wpAuthors[i].name} Blog`,
+        "--admin_user=admin", "--admin_password=admin",
+        `--admin_email=admin@test.test`,
+        "--skip-email", "--allow-root",
+      ]);
+      const appPw = (await composeExec(E2E_DIR, c, [
+        "wp", "user", "application-password", "create", "admin", "e2e-sim", "--porcelain", "--allow-root",
+      ])).trim();
+      wpAuthors[i].wpAppPassword = appPw;
+      console.log(`  Installed ${c} (app password: ${appPw.slice(0, 8)}...)`);
+    } catch (err) {
+      console.error(`  WP setup failed for ${wpAuthors[i].name}:`, err);
+    }
+  }
+
+  // Verify
+  for (const author of authors) {
+    const pk = await client.getAuthorPublicKey(author.id);
+    console.log(`  ${author.name}: key=${pk.id.slice(0, 8)}... algo=${pk.algorithm}`);
+  }
+
+  tracker.setAuthors(authors);
+
+  // --- Phase 2: Publish ---
+  console.log("\n=== Phase 2: Content Publishing ===");
+  const p2result = await runPhase2(config, authors, tracker, E2E_DIR);
+  console.log(`\nPhase 2: ${p2result.success ? "PASS" : "FAIL"} (${(p2result.duration / 1000).toFixed(1)}s)`);
+  if (p2result.errors.length > 0) {
+    console.log("Errors:", p2result.errors);
+  }
+
+  // Summary
+  const manifest = tracker.getManifest();
+  console.log(`\n=== Summary ===`);
+  console.log(`Authors: ${manifest.authors.length}`);
+  console.log(`Articles: ${manifest.articles.length}`);
+  console.log(`Malicious: ${manifest.articles.filter((a) => a.isMalicious).length}`);
+  console.log(`Honest: ${manifest.articles.filter((a) => !a.isMalicious).length}`);
+
+  // Verify articles are accessible and contain signed-section
+  console.log(`\n=== Verification ===`);
+  const proxyUrl = new URL(config.nginx_proxy_url || "http://localhost:8080");
+  const proxyHost = proxyUrl.hostname;
+  const proxyPort = parseInt(proxyUrl.port, 10) || 80;
+
+  let passing = 0;
+  let totalFetched = 0;
+  for (const article of manifest.articles) {
+    try {
+      const parsed = new URL(article.url);
+      const res = await rawHttpGet(proxyHost, proxyPort, parsed.host, parsed.pathname + parsed.search);
+      totalFetched++;
+      const hasSignedSection = res.body.includes("signed-section");
+      const marker = hasSignedSection ? "[signed]" : "[UNSIGNED]";
+      console.log(`  ${article.url} -> ${res.status} ${marker}`);
+      if (res.status === 200 && hasSignedSection) passing++;
+    } catch (err) {
+      console.log(`  ${article.url} -> ERROR: ${err}`);
+    }
+  }
+  console.log(`\n  ${passing}/${totalFetched} articles verified (200 + signed-section present)`);
+
+  console.log("\nSmoke test complete.\n");
+}
+
+main().catch((err) => {
+  console.error("Fatal:", err);
+  process.exit(1);
+});

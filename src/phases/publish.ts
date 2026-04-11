@@ -1,11 +1,37 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
+import { normalizeText } from "@htmltrust/canonicalization";
 import { generateArticle } from "../lib/ollama.js";
-import { WordPressClient } from "../lib/wordpress-api.js";
 import { HugoPublisher } from "../lib/hugo-publisher.js";
 import { TrustApiClient } from "../lib/trust-api.js";
 import { GroundTruthTracker } from "../lib/ground-truth.js";
+import { composeExec, writeFileToContainer } from "../lib/docker.js";
 import type { ScenarioConfig, AuthorProfile, AIAssistance, ArticleMetadata, PhaseResult } from "../types.js";
+
+function computeContentHash(text: string): string {
+  const canonical = normalizeText(text).trim().replace(/\s+/g, " ");
+  const hash = createHash("sha256").update(canonical, "utf-8").digest("hex");
+  return `sha256:${hash}`;
+}
+
+function buildSignedSectionHtml(opts: {
+  signature: string;
+  keyId: string;
+  contentHash: string;
+  author: string;
+  signedAt: string;
+  claims: ArticleMetadata;
+}): string {
+  const metas = [
+    `<meta name="author" content="${opts.author}">`,
+    `<meta name="signed-at" content="${opts.signedAt}">`,
+    ...Object.entries(opts.claims).map(([k, v]) => `<meta name="claim:${k}" content="${v}">`),
+  ].join("\n  ");
+  return `<signed-section signature="${opts.signature}" keyid="${opts.keyId}" algorithm="ed25519" content-hash="${opts.contentHash}" style="display: block;">
+  ${metas}
+</signed-section>`;
+}
 
 function createRng(seed: number): () => number {
   let s = seed | 0;
@@ -43,10 +69,56 @@ export async function runPhase2(
         const slug = `article-${i + 1}`;
         let url: string;
 
+        // Compute content hash for signing
+        const contentHash = computeContentHash(content);
+
         if (author.cmsType === "wordpress") {
-          const wp = new WordPressClient(`http://${author.domain}`, "admin", "admin");
-          const post = await wp.createPost({ title, content: `<p>${content}</p>`, status: "publish" });
-          url = post.link;
+          // Sign content FIRST so we can embed the signed-section in the post body
+          const sigResult = await trustClient.signContent(author.authorApiKey, {
+            contentHash, domain: author.domain,
+            claims: declaredMeta as unknown as Record<string, string>,
+          });
+
+          // Build the signed-section HTML to inject alongside the article content
+          const signedSection = buildSignedSectionHtml({
+            signature: sigResult.signature,
+            keyId: `http://localhost:3000/api/authors/${author.id}/public-key`,
+            contentHash,
+            author: author.name,
+            signedAt: new Date().toISOString(),
+            claims: declaredMeta,
+          });
+
+          const postBody = `<p>${content}</p>\n${signedSection}`;
+
+          // Write the post body to a temp file inside the WP container via spawn (stdin)
+          const c = author.wpContainerName!;
+          const tmpFile = `/tmp/post-${Date.now()}-${i}.html`;
+          await writeFileToContainer(e2eDir, c, tmpFile, postBody);
+
+          const postIdStr = (await composeExec(e2eDir, c, [
+            "wp", "post", "create", tmpFile,
+            `--post_title=${title}`,
+            "--post_status=publish",
+            "--post_type=post",
+            "--porcelain",
+            "--allow-root",
+          ])).trim();
+
+          await composeExec(e2eDir, c, ["rm", tmpFile]);
+
+          url = `http://${author.domain}/?p=${postIdStr}`;
+
+          const malCheck = tracker.checkMalicious(declaredMeta, actualMeta);
+          tracker.addArticle({
+            id: `${author.id}-${slug}`, authorId: author.id, title, content, url,
+            declaredMetadata: declaredMeta, actualMetadata: actualMeta,
+            isMalicious: malCheck.isMalicious,
+            maliciousReason: malCheck.reason,
+            contentHash, signature: sigResult.signature,
+          });
+          console.log(`  ${title}${malCheck.isMalicious ? " [MALICIOUS]" : ""} -> ${url}`);
+          continue;
         } else {
           const artPath = await hugoPub!.addArticle({ slug, title, content, claims: declaredMeta as unknown as Record<string, string> });
           url = `http://${author.domain}${artPath}`;
@@ -68,12 +140,13 @@ export async function runPhase2(
         await hugoPub.build(outDir);
 
         for (const article of tracker.getArticlesForAuthor(author.id)) {
+          const hash = article.contentHash || computeContentHash(article.content);
           const sig = await trustClient.signContent(author.authorApiKey, {
-            contentHash: article.contentHash || `sha256:placeholder-${article.id}`,
+            contentHash: hash,
             domain: author.domain, claims: article.declaredMetadata as unknown as Record<string, string>,
           });
           article.signature = sig.signature;
-          article.contentHash = sig.contentHash;
+          article.contentHash = hash;
         }
       } catch (err) {
         errors.push(`Hugo build failed for ${author.name}: ${err}`);

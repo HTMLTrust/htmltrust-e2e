@@ -9,6 +9,7 @@ export interface ScenarioConfig {
   post_report_consumers: number;
   trust_server: TrustServerConfig;
   ollama: OllamaConfig;
+  nginx_proxy_url?: string; // e.g. "http://localhost:8080" when running from host
 }
 
 export interface AuthorConfig {
@@ -65,6 +66,7 @@ export interface AuthorProfile {
   domain: string;
   malicious_pct: number;
   wpContainerName?: string;
+  wpAppPassword?: string; // WordPress Application Password for REST API
 }
 
 export interface Article {

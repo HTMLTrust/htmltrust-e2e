@@ -1,0 +1,45 @@
+seed: 42
+screenshot_sample_pct: 50
+
+authors:
+  count: 3
+  cms_split:
+    wordpress: 2
+    hugo: 1
+  articles_per_author: [2, 3]
+  ai_metadata_distribution:
+    None: 0.35
+    "Human+AI": 0.35
+    "AI-only": 0.30
+  malicious_profiles:
+    - malicious_pct: 0
+      weight: 0.6
+    - malicious_pct: 0.5
+      weight: 0.2
+    - malicious_pct: 1.0
+      weight: 0.2
+
+consumers:
+  count: 5
+  trusted_authors: [0, 2]
+  visit_pct: [0.5, 1.0]
+  vote_probability: 0.5
+  batch_size: 2
+
+researcher:
+  enabled: true
+  detection_method: ground_truth
+  report_threshold: 0.8
+
+post_report_consumers: 2
+
+trust_server:
+  url: "http://localhost:3000"
+  general_api_key: sim_general_key
+  admin_api_key: sim_admin_key
+
+ollama:
+  model: "llama3.2:3b"
+  host: "http://localhost:11434"
+
+nginx_proxy_url: "http://localhost:8080"

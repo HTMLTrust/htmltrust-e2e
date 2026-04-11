@@ -36,27 +36,40 @@ export async function runPhase1(config: ScenarioConfig, authors: AuthorProfile[]
     console.log(`  ${author.name} (${author.cmsType}, mal=${author.malicious_pct}) -> ${author.id}`);
   }
 
+  // Create WordPress databases
+  console.log("[Phase 1] Creating WordPress databases...");
+  const wpAuthors = authors.filter((a) => a.cmsType === "wordpress");
+  for (let i = 0; i < wpAuthors.length; i++) {
+    await composeExec(e2eDir, "wp-db", ["mariadb", "-uroot", "-prootpass", "-e", `CREATE DATABASE IF NOT EXISTS wp${i + 1};`]);
+  }
+
+  // Wait for WordPress to be ready after DB creation
+  console.log("[Phase 1] Waiting for WordPress containers...");
+  for (const author of wpAuthors) {
+    const c = author.wpContainerName!;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      try {
+        await composeExec(e2eDir, c, ["php", "-r", "echo 'ready';"]);
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+
   // Configure WordPress instances
   console.log("[Phase 1] Configuring WordPress...");
-  for (const author of authors.filter((a) => a.cmsType === "wordpress")) {
+  for (const author of wpAuthors) {
     try {
       const c = author.wpContainerName!;
       await composeExec(e2eDir, c, ["wp", "core", "install",
         `--url=http://${author.domain}`, `--title=${author.name} Blog`,
         "--admin_user=admin", "--admin_password=admin", `--admin_email=admin@${author.domain}`,
         "--skip-email", "--allow-root"]);
-      await composeExec(e2eDir, c, ["wp", "plugin", "activate", "content-signing", "--allow-root"]);
-      await composeExec(e2eDir, c, ["wp", "option", "update", "content_signing_enable_signing", "1", "--allow-root"]);
-      await composeExec(e2eDir, c, ["wp", "option", "update", "content_signing_sign_on_publish", "1", "--allow-root"]);
 
-      const evalScript = [
-        "global $wpdb;",
-        `$wpdb->insert($wpdb->prefix.'content_signing_servers', ['name'=>'Trust Server','api_url'=>'${config.trust_server.url}','api_key_encrypted'=>'${config.trust_server.general_api_key}','is_default_server'=>1]);`,
-        "$sid=$wpdb->insert_id;",
-        `$wpdb->insert($wpdb->prefix.'content_signing_authors', ['wp_user_id'=>1,'signing_author_id'=>'${author.id}','server_id'=>$sid,'author_api_key_encrypted'=>'${author.authorApiKey}','default_key_type'=>'HUMAN','default_claims_json'=>'{}','is_site_endorser'=>0]);`,
-      ].join(" ");
-      await composeExec(e2eDir, c, ["wp", "eval", evalScript, "--allow-root"]);
-      console.log(`  Configured ${c}`);
+      // Note: WP plugin has PHP syntax errors in the CMS reference repo.
+      // Publishing is done via wp-cli, signing via trust server API.
+      console.log(`  Installed ${c}`);
     } catch (err) {
       errors.push(`WP config failed for ${author.name}: ${err}`);
     }

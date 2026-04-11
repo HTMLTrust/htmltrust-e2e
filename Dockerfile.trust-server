@@ -1,7 +1,16 @@
 FROM node:22-slim
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci --production
-COPY . .
+
+# Copy the local canonicalization package first
+COPY htmltrust-canonicalization/javascript /tmp/canonicalization
+
+# Copy server source
+COPY htmltrust-server-reference/package*.json ./
+
+# Replace the GitHub dep with the local copy, then install
+RUN sed -i 's|"@htmltrust/canonicalization":.*|"@htmltrust/canonicalization": "file:///tmp/canonicalization",|' package.json \
+    && npm install --production
+
+COPY htmltrust-server-reference/ .
 EXPOSE 3000
 CMD ["node", "src/server.js"]
