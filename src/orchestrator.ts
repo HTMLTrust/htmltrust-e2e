@@ -48,13 +48,18 @@ async function main(): Promise<void> {
 
     const articles = tracker.getManifest().articles;
 
-    const { result: p3, sessionLogs } = await runPhase3(config, authors, articles, consumers, extensionPath, E2E_DIR);
+    // NOTE: orchestrator passes extensionPath in the trustDirectoryUrls slot;
+    // this looks like a long-standing bug (pre-existing in the committed
+    // source). Wrapping in an array to satisfy the new signature without
+    // changing behavior. The run-phases-3-5.ts entry point is the path
+    // that's actually exercised; orchestrator.ts is a TODO to fix.
+    const { result: p3, sessionLogs } = await runPhase3(config, authors, articles, consumers, [extensionPath], E2E_DIR);
     results.push(p3);
 
     const { result: p35, reports } = await runPhase35(config, authors, articles, E2E_DIR);
     results.push(p35);
 
-    const { result: p4, sessionLogs: postLogs } = await runPhase4(config, authors, articles, consumers, sessionLogs, reports, extensionPath, E2E_DIR);
+    const { result: p4, sessionLogs: postLogs } = await runPhase4(config, authors, articles, consumers, sessionLogs, reports, [extensionPath], E2E_DIR);
     results.push(p4);
 
     const p5 = await runPhase5(config, authors, articles, sessionLogs, postLogs, reports, E2E_DIR);

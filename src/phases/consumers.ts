@@ -5,7 +5,7 @@ import type { ScenarioConfig, AuthorProfile, Article, ConsumerProfile, SessionLo
 
 export async function runPhase3(
   config: ScenarioConfig, authors: AuthorProfile[], articles: Article[],
-  consumers: ConsumerProfile[], trustServerUrl: string, e2eDir: string
+  consumers: ConsumerProfile[], trustDirectoryUrls: string[], e2eDir: string
 ): Promise<{ result: PhaseResult; sessionLogs: SessionLog[] }> {
   const errors: string[] = [];
   const start = Date.now();
@@ -20,7 +20,7 @@ export async function runPhase3(
     const batch = consumers.slice(b * bs, (b + 1) * bs);
     console.log(`[Phase 3] Batch ${b + 1}/${total} (${batch.length} consumers)...`);
     const results = await Promise.allSettled(batch.map((c) =>
-      runConsumerSession({ consumer: c, authors, articles, trustServerUrl, screenshotDir: ssDir })
+      runConsumerSession({ consumer: c, authors, articles, trustDirectoryUrls, screenshotDir: ssDir })
     ));
     for (const r of results) {
       if (r.status === "fulfilled") sessionLogs.push(r.value);

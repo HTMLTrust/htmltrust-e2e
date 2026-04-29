@@ -7,7 +7,18 @@ export interface ScenarioConfig {
   consumers: ConsumerConfig;
   researcher: ResearcherConfig;
   post_report_consumers: number;
-  trust_server: TrustServerConfig;
+  /**
+   * Trust directory configuration (formerly `trust_server`). For now this
+   * carries the single-directory shape used by every existing scenario YAML;
+   * downstream code (playwright-session) accepts a list of directory URLs
+   * via `trustDirectoryUrls` and treats this as one entry of that list.
+   *
+   * TODO(scenario-yaml): scenario.yaml / scenario-small.yaml still use the
+   * old `trust_server:` key. Migrate them to a `trust_directories:` array
+   * once the multi-directory simulation work lands. Until then we accept
+   * both keys here.
+   */
+  trust_server: TrustDirectoryConfig;
   ollama: OllamaConfig;
   nginx_proxy_url?: string; // e.g. "http://localhost:8080" when running from host
 }
@@ -39,11 +50,21 @@ export interface ResearcherConfig {
   report_threshold: number;
 }
 
-export interface TrustServerConfig {
+/**
+ * Configuration for a single trust directory (formerly "trust server").
+ *
+ * Renamed to align with the spec terminology — the prototype's "trust
+ * server" is a special case of a generalized trust directory. See
+ * src/lib/trust-api.ts for the API shape.
+ */
+export interface TrustDirectoryConfig {
   url: string;
   general_api_key: string;
   admin_api_key: string;
 }
+
+/** @deprecated Use TrustDirectoryConfig. Retained for legacy scenario YAML. */
+export type TrustServerConfig = TrustDirectoryConfig;
 
 export interface OllamaConfig {
   model: string;

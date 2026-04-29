@@ -32,9 +32,12 @@ async function main(): Promise<void> {
 
   const config = await loadScenario(scenarioPath);
 
-  // Override trust server URL for in-container execution (use Docker DNS)
+  // Override trust directory URL for in-container execution (use Docker DNS)
   const trustServerUrl = "http://trust-server:3000";
-  console.log(`Using trust server: ${trustServerUrl}\n`);
+  // Trust directory list — currently a single entry. Multi-directory
+  // simulation will populate this from scenario YAML in a follow-up.
+  const trustDirectoryUrls = [trustServerUrl];
+  console.log(`Using trust directory: ${trustServerUrl}\n`);
 
   // Load ground truth from Phases 1-2
   const gtPath = path.join(E2E_DIR, "results/ground-truth.json");
@@ -70,7 +73,7 @@ async function main(): Promise<void> {
   // --- Phase 3: Consumer Browsing ---
   console.log("\n=== Phase 3: Consumer Browsing ===");
   const { result: p3, sessionLogs } = await runPhase3(
-    config, authors, articles, consumers, trustServerUrl, E2E_DIR
+    config, authors, articles, consumers, trustDirectoryUrls, E2E_DIR
   );
   results.push(p3);
   console.log(`Phase 3: ${p3.success ? "PASS" : "FAIL"} (${(p3.duration / 1000).toFixed(1)}s)`);
@@ -92,7 +95,7 @@ async function main(): Promise<void> {
   // --- Phase 4: Post-Report Re-visit ---
   console.log("\n=== Phase 4: Post-Report Consumer Pass ===");
   const { result: p4, sessionLogs: postLogs } = await runPhase4(
-    config, authors, articles, consumers, sessionLogs, reports, trustServerUrl, E2E_DIR
+    config, authors, articles, consumers, sessionLogs, reports, trustDirectoryUrls, E2E_DIR
   );
   results.push(p4);
   console.log(`Phase 4: ${p4.success ? "PASS" : "FAIL"} (${(p4.duration / 1000).toFixed(1)}s) -- ${postLogs.length} sessions`);

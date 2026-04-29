@@ -1,6 +1,20 @@
 import type { CreateAuthorResponse, SignContentResponse, KeyReputationResponse, VoteType } from "../types.js";
 
+/**
+ * Client for the e2e simulation's trust directory HTTP API.
+ *
+ * Historically called "trust server" in this codebase; the spec terminology
+ * is "trust directory" (a federated convenience registry per §2.4). The
+ * class name is kept generic — `TrustApiClient` — because the same
+ * surface covers author creation, content signing, voting, key reputation,
+ * and reporting.
+ */
 export class TrustApiClient {
+  /**
+   * @param baseUrl Trust directory base URL (e.g. `http://trust-server:3000`).
+   *                Despite the legacy hostname, this is treated as a single
+   *                trust directory in the new multi-directory model.
+   */
   constructor(private baseUrl: string, private generalApiKey: string, private adminApiKey: string) {}
 
   private async request<T>(path: string, opts: { method: string; headers?: Record<string, string>; body?: unknown }): Promise<T> {
@@ -24,11 +38,34 @@ export class TrustApiClient {
     return this.request(`/api/authors/${authorId}/public-key`, { method: "GET" });
   }
 
-  async signContent(authorApiKey: string, data: { contentHash: string; domain: string; claims: Record<string, string> }): Promise<SignContentResponse> {
+  async signContent(
+    authorApiKey: string,
+    data: {
+      contentHash: string;
+      claimsHash: string;
+      signedAt: string;
+      domain: string;
+      claims: Record<string, string>;
+    },
+  ): Promise<SignContentResponse> {
     return this.request("/api/content/sign", { method: "POST", headers: { "X-AUTHOR-API-KEY": authorApiKey }, body: data });
   }
 
-  async verifyContent(data: { contentHash: string; domain: string; authorId: string; signature: string }): Promise<{ valid: boolean }> {
+  /**
+   * Verify content via the trust directory's convenience endpoint.
+   *
+   * NOTE: Per HTMLTrust spec §3.1 cryptographic verification SHOULD happen
+   * locally in the client. Use this only for legacy or low-trust clients that
+   * cannot perform local verification.
+   */
+  async verifyContent(data: {
+    contentHash: string;
+    claimsHash: string;
+    signedAt: string;
+    domain: string;
+    authorId: string;
+    signature: string;
+  }): Promise<{ valid: boolean }> {
     return this.request("/api/content/verify", { method: "POST", body: data });
   }
 
