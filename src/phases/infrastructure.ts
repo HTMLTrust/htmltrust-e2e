@@ -67,8 +67,15 @@ export async function runPhase1(config: ScenarioConfig, authors: AuthorProfile[]
         "--admin_user=admin", "--admin_password=admin", `--admin_email=admin@${author.domain}`,
         "--skip-email", "--allow-root"]);
 
-      // Note: WP plugin has PHP syntax errors in the CMS reference repo.
-      // Publishing is done via wp-cli, signing via trust server API.
+      // Activate the content-signing plugin. The plugin source is mounted into
+      // the container by docker-compose at wp-content/plugins/content-signing.
+      // Previously skipped because of a DB init-order bug
+      // (htmltrust-cms-reference fix/wp-plugin-init-and-audit) that crashed
+      // activation by querying wp_content_signing_servers before the activator
+      // had created it. That fix defers component init to the WP 'init' action
+      // and adds a maybe_install_schema() guard, so activation now succeeds.
+      await composeExec(e2eDir, c, ["wp", "plugin", "activate", "content-signing", "--allow-root"]);
+
       console.log(`  Installed ${c}`);
     } catch (err) {
       errors.push(`WP config failed for ${author.name}: ${err}`);

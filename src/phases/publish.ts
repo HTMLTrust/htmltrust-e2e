@@ -73,6 +73,17 @@ export async function runPhase2(
         const contentHash = computeContentHash(content);
 
         if (author.cmsType === "wordpress") {
+          // TODO(wp-plugin-handoff): Once the content-signing plugin's
+          // publish-time wrapper hook is verified end-to-end, drop the manual
+          // <signed-section> injection below and let the plugin do it. The
+          // plugin is now activated in infrastructure.ts (chore/wp-reenable-
+          // in-e2e), but its hook path has not been validated against this
+          // harness, so we keep the manual injection as a fallback to avoid
+          // silently breaking publishes if the hook misbehaves. Remove this
+          // block (and the buildSignedSectionHtml helper, if no other caller
+          // uses it) once a full sim run confirms the plugin emits an
+          // equivalent <signed-section>.
+          //
           // Sign content FIRST so we can embed the signed-section in the post body
           const sigResult = await trustClient.signContent(author.authorApiKey, {
             contentHash, domain: author.domain,
