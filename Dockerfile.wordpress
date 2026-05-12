@@ -14,3 +14,23 @@ RUN echo 'SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1' > /etc/apache2/co
 RUN mkdir -p /usr/src/wordpress/wp-content/mu-plugins \
     && echo '<?php add_filter("wp_is_application_passwords_available", "__return_true");' \
        > /usr/src/wordpress/wp-content/mu-plugins/allow-app-pw.php
+
+# Disable wpautop / wptexturize on the_content so signed-section HTML stays
+# intact. wpautop wraps loose text in <p> tags and closes them prematurely
+# when it encounters a block element nested inside a custom element, which
+# breaks the wrapped signed-section form used by HTMLTrust (the <article>
+# child of <signed-section> ends up as a DOM sibling of the <p>-wrapped
+# signed-section, empty of the signed content). The filters must be removed
+# after WP core registers them, so we hook into 'init' at a late priority.
+RUN printf '%s\n' \
+      '<?php' \
+      'add_action("init", function() {' \
+      '  remove_filter("the_content", "wpautop");' \
+      '  remove_filter("the_content", "wptexturize");' \
+      '  remove_filter("the_content", "wp_filter_content_tags");' \
+      '  remove_filter("the_content", "convert_smilies");' \
+      '  remove_filter("the_content", "convert_chars");' \
+      '  remove_filter("the_content", "do_blocks");' \
+      '  remove_filter("the_excerpt", "wpautop");' \
+      '}, 99);' \
+    > /usr/src/wordpress/wp-content/mu-plugins/disable-content-filters.php

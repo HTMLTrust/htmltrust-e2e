@@ -18,12 +18,25 @@ describe("TrustApiClient", () => {
     expect(result.authorApiKey).toBe("author-key-1");
   });
 
-  it("signs content with author API key", async () => {
-    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ contentHash: "sha256:abc", signature: "sig123", authorId: "a1", domain: "example.test", claims: {} }) });
-    const result = await client.signContent("author-key-1", { contentHash: "sha256:abc", domain: "example.test", claims: { ContentType: "Article" } });
+  it("signs content with author API key and new binding format", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ contentHash: "sha256:abc", claimsHash: "sha256:def", signedAt: "2026-04-10T12:00:00Z", signature: "sig123", authorId: "a1", domain: "example.test", claims: {} }) });
+    const result = await client.signContent("author-key-1", {
+      contentHash: "sha256:abc",
+      claimsHash: "sha256:def",
+      signedAt: "2026-04-10T12:00:00Z",
+      domain: "example.test",
+      claims: { ContentType: "Article" },
+    });
     expect(mockFetch).toHaveBeenCalledWith("http://trust-server:3000/api/content/sign", expect.objectContaining({
       method: "POST", headers: { "Content-Type": "application/json", "X-AUTHOR-API-KEY": "author-key-1" },
     }));
+    // Verify the new binding fields are in the request body
+    const callArgs = mockFetch.mock.calls[0][1];
+    const body = JSON.parse(callArgs.body);
+    expect(body.contentHash).toBe("sha256:abc");
+    expect(body.claimsHash).toBe("sha256:def");
+    expect(body.signedAt).toBe("2026-04-10T12:00:00Z");
+    expect(body.domain).toBe("example.test");
     expect(result.signature).toBe("sig123");
   });
 

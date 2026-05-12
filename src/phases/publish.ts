@@ -1,7 +1,11 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { normalizeText } from "@htmltrust/canonicalization";
+import {
+  normalizeText,
+  extractCanonicalText,
+  canonicalizeClaims,
+} from "@htmltrust/canonicalization";
 import { generateArticle } from "../lib/ollama.js";
 import { HugoPublisher } from "../lib/hugo-publisher.js";
 import { TrustApiClient } from "../lib/trust-api.js";
@@ -9,28 +13,64 @@ import { GroundTruthTracker } from "../lib/ground-truth.js";
 import { composeExec, writeFileToContainer } from "../lib/docker.js";
 import type { ScenarioConfig, AuthorProfile, AIAssistance, ArticleMetadata, PhaseResult } from "../types.js";
 
-function computeContentHash(text: string): string {
+/**
+ * Compute a base64-encoded SHA-256 hash of already-canonicalized text.
+ * Returns the prefixed form "sha256:<unpadded-base64>".
+ */
+function hashCanonical(canonical: string): string {
+  const digest = createHash("sha256").update(canonical, "utf-8").digest("base64").replace(/=+$/, "");
+  return `sha256:${digest}`;
+}
+
+/**
+ * Compute the content hash of plain text (not HTML). Applies normalizeText
+ * then base64-sha256. Use this at publish time when the raw text is known.
+ */
+function computeContentHashFromText(text: string): string {
   const canonical = normalizeText(text).trim().replace(/\s+/g, " ");
-  const hash = createHash("sha256").update(canonical, "utf-8").digest("hex");
-  return `sha256:${hash}`;
+  return hashCanonical(canonical);
+}
+
+/**
+ * Compute the content hash of an HTML fragment. Applies extractCanonicalText
+ * then base64-sha256. Use this at verify time when only the rendered HTML
+ * is available.
+ */
+function computeContentHashFromHtml(html: string): string {
+  const canonical = extractCanonicalText(html);
+  return hashCanonical(canonical);
+}
+
+/**
+ * Compute the claims hash from a canonical claims map. Serializes claims
+ * via canonicalizeClaims (sorted name=value pairs, newline-joined), then
+ * hashes with base64-sha256.
+ */
+function computeClaimsHash(claims: Record<string, string>): string {
+  const canonical = canonicalizeClaims(claims);
+  return hashCanonical(canonical);
 }
 
 function buildSignedSectionHtml(opts: {
   signature: string;
   keyId: string;
   contentHash: string;
+  algorithm: string;
   author: string;
   signedAt: string;
   claims: ArticleMetadata;
+  innerContentHtml?: string;
 }): string {
   const metas = [
     `<meta name="author" content="${opts.author}">`,
     `<meta name="signed-at" content="${opts.signedAt}">`,
     ...Object.entries(opts.claims).map(([k, v]) => `<meta name="claim:${k}" content="${v}">`),
   ].join("\n  ");
-  return `<signed-section signature="${opts.signature}" keyid="${opts.keyId}" algorithm="ed25519" content-hash="${opts.contentHash}" style="display: block;">
-  ${metas}
-</signed-section>`;
+
+  const inner = opts.innerContentHtml ? `\n  ${opts.innerContentHtml}\n` : "\n";
+
+  return `<signed-section signature="${opts.signature}" keyid="${opts.keyId}" algorithm="${opts.algorithm}" content-hash="${opts.contentHash}">
+  ${metas}${inner}</signed-section>`;
 }
 
 function createRng(seed: number): () => number {
@@ -69,27 +109,45 @@ export async function runPhase2(
         const slug = `article-${i + 1}`;
         let url: string;
 
-        // Compute content hash for signing
-        const contentHash = computeContentHash(content);
+        // Build the claims that will appear in the signed-section's <meta> tags.
+        // The browser will extract these and compute the same claims hash to verify.
+        const claimsForSigning: Record<string, string> = {
+          ...(declaredMeta as unknown as Record<string, string>),
+        };
+
+        // Compute the canonical binding fields per spec §2.1
+        const contentHash = computeContentHashFromText(content);
+        const claimsHash = computeClaimsHash(claimsForSigning);
+        const signedAt = new Date().toISOString();
 
         if (author.cmsType === "wordpress") {
-          // Sign content FIRST so we can embed the signed-section in the post body
+          // Ask the trust server to sign the binding.
+          // NOTE: per spec §3.1 cryptographic verification SHOULD be local; the
+          // trust server's /content/sign endpoint is a convenience for holding
+          // author private keys on the author's behalf in the "signup" use case.
           const sigResult = await trustClient.signContent(author.authorApiKey, {
-            contentHash, domain: author.domain,
-            claims: declaredMeta as unknown as Record<string, string>,
+            contentHash, claimsHash, signedAt,
+            domain: author.domain,
+            claims: claimsForSigning,
           });
 
-          // Build the signed-section HTML to inject alongside the article content
+          // Build the signed-section wrapper with the content nested inside.
+          // Using the wrapped form (spec §2.1 example): the <signed-section>
+          // contains the content, so the browser can extract text from within
+          // it unambiguously.
+          const keyId = `http://trust-server:3000/api/authors/${author.id}/public-key`;
           const signedSection = buildSignedSectionHtml({
             signature: sigResult.signature,
-            keyId: `http://localhost:3000/api/authors/${author.id}/public-key`,
+            keyId,
             contentHash,
+            algorithm: "ed25519",
             author: author.name,
-            signedAt: new Date().toISOString(),
+            signedAt,
             claims: declaredMeta,
+            innerContentHtml: `<article><p>${content}</p></article>`,
           });
 
-          const postBody = `<p>${content}</p>\n${signedSection}`;
+          const postBody = signedSection;
 
           // Write the post body to a temp file inside the WP container via spawn (stdin)
           const c = author.wpContainerName!;
@@ -139,9 +197,15 @@ export async function runPhase2(
         await mkdir(outDir, { recursive: true });
         await hugoPub.build(outDir);
 
-        // Post-build: for each rendered article, read the HTML, extract the Hugo-computed
-        // content-hash, sign it via the trust server, and inject the signature attributes.
-        // This ensures the signature matches the hash that's actually in the rendered page.
+        // Post-build: for each rendered article, read the HTML, extract the
+        // article text, compute our own canonical hash (NOT trusting the
+        // Hugo-template-computed hash), compute claims hash, sign the new
+        // binding, and rewrite the signed-section to include the signature
+        // attributes AND embed the text content inside the signed-section.
+        //
+        // The current Hugo partial writes content-hash from its own template
+        // hashing function. That produces a different result than our JS
+        // canonicalization pipeline, so we overwrite it here.
         for (const article of tracker.getArticlesForAuthor(author.id)) {
           const slugMatch = article.id.match(/article-(\d+)$/);
           if (!slugMatch) continue;
@@ -154,28 +218,53 @@ export async function runPhase2(
             continue;
           }
 
-          // Extract the content-hash that Hugo wrote into the signed-section
-          const hashMatch = html.match(/<signed-section[^>]*content-hash=["']?(sha256:[a-f0-9]{64})["']?/);
-          if (!hashMatch) {
-            errors.push(`No content-hash found in ${htmlPath}`);
-            continue;
-          }
-          const renderedHash = hashMatch[1];
+          // Compute canonical hash from the raw article content (same as WP path)
+          const contentHash = computeContentHashFromText(article.content);
+          const claimsForSigning = { ...(article.declaredMetadata as unknown as Record<string, string>) };
+          const claimsHash = computeClaimsHash(claimsForSigning);
+          const signedAt = new Date().toISOString();
 
-          // Sign that exact hash
+          // Sign the canonical binding via the trust server
           const sig = await trustClient.signContent(author.authorApiKey, {
-            contentHash: renderedHash,
+            contentHash, claimsHash, signedAt,
             domain: author.domain,
-            claims: article.declaredMetadata as unknown as Record<string, string>,
+            claims: claimsForSigning,
           });
 
-          // Rewrite the signed-section to include signature/keyid/algorithm
-          const newTag = `<signed-section signature="${sig.signature}" keyid="http://trust-server:3000/api/authors/${author.id}/public-key" algorithm="ed25519" content-hash="${renderedHash}" style="display: block;">`;
-          const newHtml = html.replace(/<signed-section[^>]*>/, newTag);
+          const keyId = `http://trust-server:3000/api/authors/${author.id}/public-key`;
+
+          // Build a new signed-section that wraps the article text inline.
+          // We replace the Hugo-generated standalone signed-section with our
+          // wrapped version.
+          const newSignedSection = buildSignedSectionHtml({
+            signature: sig.signature,
+            keyId,
+            contentHash,
+            algorithm: "ed25519",
+            author: author.name,
+            signedAt,
+            claims: article.declaredMetadata,
+            innerContentHtml: `<article><p>${article.content}</p></article>`,
+          });
+
+          // Replace the entire old signed-section block (and the separate
+          // article element Hugo emitted) with our new wrapped form.
+          let newHtml = html.replace(
+            /<article>[\s\S]*?<\/article>\s*<signed-section[\s\S]*?<\/signed-section>/,
+            newSignedSection,
+          );
+          if (newHtml === html) {
+            // Fallback: just replace the signed-section tag if the above
+            // combined pattern didn't match (template variation).
+            newHtml = html.replace(
+              /<signed-section[\s\S]*?<\/signed-section>/,
+              newSignedSection,
+            );
+          }
           await writeFile(htmlPath, newHtml);
 
           article.signature = sig.signature;
-          article.contentHash = renderedHash;
+          article.contentHash = contentHash;
         }
       } catch (err) {
         errors.push(`Hugo build failed for ${author.name}: ${err}`);

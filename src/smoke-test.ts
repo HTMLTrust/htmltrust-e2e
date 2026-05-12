@@ -60,11 +60,32 @@ async function main(): Promise<void> {
   const authors = generateAuthorProfiles(config);
   const tracker = new GroundTruthTracker(config.seed);
 
-  // Generate nginx.conf from the scenario and reload nginx
+  // Generate nginx.conf from the scenario and reload nginx.
+  // We use `nginx -s reload` with retry to handle the case where nginx is
+  // still initializing (PID file not yet created). If reload repeatedly
+  // fails, fall back to restarting the container, which is slower but
+  // always works.
   console.log("=== Regenerating nginx.conf ===");
   await generateNginxConfig(authors, path.join(E2E_DIR, "nginx.conf"));
-  await composeExec(E2E_DIR, "nginx", ["nginx", "-s", "reload"]);
-  console.log("  nginx reloaded\n");
+
+  let reloaded = false;
+  for (let attempt = 0; attempt < 5 && !reloaded; attempt++) {
+    try {
+      await composeExec(E2E_DIR, "nginx", ["nginx", "-s", "reload"]);
+      reloaded = true;
+    } catch {
+      // Wait briefly and retry
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  if (!reloaded) {
+    console.log("  nginx reload failed, restarting container instead");
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+    await execFileAsync("docker", ["compose", "restart", "nginx"], { cwd: E2E_DIR });
+  }
+  console.log("  nginx ready\n");
 
   const client = new TrustApiClient(
     config.trust_server.url,
