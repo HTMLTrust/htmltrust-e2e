@@ -125,6 +125,16 @@ export async function runPhase2(
           // NOTE: per spec §3.1 cryptographic verification SHOULD be local; the
           // trust server's /content/sign endpoint is a convenience for holding
           // author private keys on the author's behalf in the "signup" use case.
+          //
+          // TODO(wp-plugin-handoff): Once the content-signing plugin's
+          // publish-time wrapper hook is verified end-to-end, drop the manual
+          // <signed-section> injection below and let the plugin do it. The
+          // plugin is now activated in infrastructure.ts, but its hook path
+          // has not been validated against this harness, so we keep the manual
+          // injection as a fallback. Remove this block (and the
+          // buildSignedSectionHtml helper, if no other caller uses it) once a
+          // full sim run confirms the plugin emits an equivalent
+          // <signed-section>.
           const sigResult = await trustClient.signContent(author.authorApiKey, {
             contentHash, claimsHash, signedAt,
             domain: author.domain,
