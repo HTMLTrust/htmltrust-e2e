@@ -39,11 +39,23 @@ services:
         condition: service_healthy
     environment:
       MONGO_URI: mongodb://mongodb:27017/htmltrust
-      GENERAL_API_KEY: sim_general_key
-      ADMIN_API_KEY: sim_admin_key
+      # Overridable per run, e.g.
+      #   HTMLTRUST_GENERAL_API_KEY=$(openssl rand -hex 24) \
+      #   HTMLTRUST_ADMIN_API_KEY=$(openssl rand -hex 24) docker compose up
+      # (or the same two lines in htmltrust-e2e/.env, which compose reads).
+      #
+      # Scenario loading applies the same environment variables, so callers can
+      # replace the checked-in simulation credentials for a run.
+      GENERAL_API_KEY: ${HTMLTRUST_GENERAL_API_KEY:-sim_general_key}
+      ADMIN_API_KEY: ${HTMLTRUST_ADMIN_API_KEY:-sim_admin_key}
+      AUTHOR_API_KEY_PEPPER: ${HTMLTRUST_AUTHOR_API_KEY_PEPPER:-sim_author_api_key_pepper}
+      DIRECTORY_BASE_URL: ${HTMLTRUST_DIRECTORY_BASE_URL:-http://trust-server:3000}
       PORT: "3000"
     ports:
-      - "3000:3000"
+      # Loopback only. "3000:3000" publishes on 0.0.0.0, exposing the trust
+      # directory API -- including the admin key's endpoints -- to anything
+      # that can reach this machine.
+      - "127.0.0.1:${HTMLTRUST_TRUST_PORT:-3000}:3000"
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 10s
@@ -57,8 +69,18 @@ services:
       - htmltrust
     volumes:
       - wp-db-data:/var/lib/mysql
+      # Creates wp1..wp5 and scopes the `wordpress` account to them. See the
+      # file for the one-time `docker compose down -v` note.
+      - ./wp-db-init.sql:/docker-entrypoint-initdb.d/10-wp-users.sql:ro
     environment:
-      MYSQL_ROOT_PASSWORD: rootpass
+      # root stays reachable inside the compose network because
+      # src/phases/infrastructure.ts and src/smoke-test.ts create the wp*
+      # databases with the configured root password. Nothing else uses it,
+      # and this service publishes no ports.
+      MYSQL_ROOT_PASSWORD: ${WP_DB_ROOT_PASSWORD:-rootpass}
+      # The unprivileged account the five WordPress containers connect as.
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: ${WP_DB_PASSWORD:-wp_sim_local_only}
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -77,8 +99,8 @@ services:
         condition: service_healthy
     environment:
       WORDPRESS_DB_HOST: wp-db
-      WORDPRESS_DB_USER: root
-      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD:-wp_sim_local_only}
       WORDPRESS_DB_NAME: wp1
     volumes:
       - wp-1-data:/var/www/html
@@ -95,8 +117,8 @@ services:
         condition: service_healthy
     environment:
       WORDPRESS_DB_HOST: wp-db
-      WORDPRESS_DB_USER: root
-      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD:-wp_sim_local_only}
       WORDPRESS_DB_NAME: wp2
     volumes:
       - wp-2-data:/var/www/html
@@ -113,8 +135,8 @@ services:
         condition: service_healthy
     environment:
       WORDPRESS_DB_HOST: wp-db
-      WORDPRESS_DB_USER: root
-      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD:-wp_sim_local_only}
       WORDPRESS_DB_NAME: wp3
     volumes:
       - wp-3-data:/var/www/html
@@ -131,8 +153,8 @@ services:
         condition: service_healthy
     environment:
       WORDPRESS_DB_HOST: wp-db
-      WORDPRESS_DB_USER: root
-      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD:-wp_sim_local_only}
       WORDPRESS_DB_NAME: wp4
     volumes:
       - wp-4-data:/var/www/html
@@ -149,8 +171,8 @@ services:
         condition: service_healthy
     environment:
       WORDPRESS_DB_HOST: wp-db
-      WORDPRESS_DB_USER: root
-      WORDPRESS_DB_PASSWORD: rootpass
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD:-wp_sim_local_only}
       WORDPRESS_DB_NAME: wp5
     volumes:
       - wp-5-data:/var/www/html
@@ -196,7 +218,10 @@ services:
       - wp-4
       - wp-5
     ports:
-      - "8080:80"
+      # Loopback only. This fronts five WordPress installs whose admin
+      # credentials are fixed sim values; "8080:80" served them to the whole
+      # network the host is on.
+      - "127.0.0.1:${HTMLTRUST_PROXY_PORT:-8080}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./hugo-sites:/var/www/hugo:ro

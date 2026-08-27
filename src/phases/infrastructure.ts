@@ -39,8 +39,9 @@ export async function runPhase1(config: ScenarioConfig, authors: AuthorProfile[]
   // Create WordPress databases
   console.log("[Phase 1] Creating WordPress databases...");
   const wpAuthors = authors.filter((a) => a.cmsType === "wordpress");
+  const rootPassword = process.env.WP_DB_ROOT_PASSWORD || "rootpass";
   for (let i = 0; i < wpAuthors.length; i++) {
-    await composeExec(e2eDir, "wp-db", ["mariadb", "-uroot", "-prootpass", "-e", `CREATE DATABASE IF NOT EXISTS wp${i + 1};`]);
+    await composeExec(e2eDir, "wp-db", ["mariadb", "-uroot", `-p${rootPassword}`, "-e", `CREATE DATABASE IF NOT EXISTS wp${i + 1};`]);
   }
 
   // Wait for WordPress to be ready after DB creation

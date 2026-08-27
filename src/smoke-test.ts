@@ -126,7 +126,8 @@ async function main(): Promise<void> {
   const wpAuthors = authors.filter((a) => a.cmsType === "wordpress");
   for (let i = 0; i < wpAuthors.length; i++) {
     try {
-      await composeExec(E2E_DIR, "wp-db", ["mariadb", "-uroot", "-prootpass", "-e", `CREATE DATABASE IF NOT EXISTS wp${i + 1};`]);
+      const rootPassword = process.env.WP_DB_ROOT_PASSWORD || "rootpass";
+      await composeExec(E2E_DIR, "wp-db", ["mariadb", "-uroot", `-p${rootPassword}`, "-e", `CREATE DATABASE IF NOT EXISTS wp${i + 1};`]);
       const c = wpAuthors[i].wpContainerName!;
       // Wait a bit for WP to be ready
       await new Promise((r) => setTimeout(r, 3000));

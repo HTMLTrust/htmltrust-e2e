@@ -15,6 +15,36 @@ describe("loadScenario", () => {
     expect(config.consumers.count).toBe(1000);
     expect(config.trust_server.url).toBe("http://trust-server:3000");
   });
+
+  it("applies runtime service and credential overrides", async () => {
+    const previous = {
+      url: process.env.HTMLTRUST_TRUST_SERVER_URL,
+      general: process.env.HTMLTRUST_GENERAL_API_KEY,
+      admin: process.env.HTMLTRUST_ADMIN_API_KEY,
+      proxy: process.env.HTMLTRUST_NGINX_PROXY_URL,
+    };
+    process.env.HTMLTRUST_TRUST_SERVER_URL = "http://trust.test:3001";
+    process.env.HTMLTRUST_GENERAL_API_KEY = "runtime-general";
+    process.env.HTMLTRUST_ADMIN_API_KEY = "runtime-admin";
+    process.env.HTMLTRUST_NGINX_PROXY_URL = "http://proxy.test:8081";
+
+    try {
+      const config = await loadScenario(scenarioPath);
+      expect(config.trust_server.url).toBe("http://trust.test:3001");
+      expect(config.trust_server.general_api_key).toBe("runtime-general");
+      expect(config.trust_server.admin_api_key).toBe("runtime-admin");
+      expect(config.nginx_proxy_url).toBe("http://proxy.test:8081");
+    } finally {
+      if (previous.url === undefined) delete process.env.HTMLTRUST_TRUST_SERVER_URL;
+      else process.env.HTMLTRUST_TRUST_SERVER_URL = previous.url;
+      if (previous.general === undefined) delete process.env.HTMLTRUST_GENERAL_API_KEY;
+      else process.env.HTMLTRUST_GENERAL_API_KEY = previous.general;
+      if (previous.admin === undefined) delete process.env.HTMLTRUST_ADMIN_API_KEY;
+      else process.env.HTMLTRUST_ADMIN_API_KEY = previous.admin;
+      if (previous.proxy === undefined) delete process.env.HTMLTRUST_NGINX_PROXY_URL;
+      else process.env.HTMLTRUST_NGINX_PROXY_URL = previous.proxy;
+    }
+  });
 });
 
 describe("generateAuthorProfiles", () => {
