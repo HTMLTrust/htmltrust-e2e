@@ -20,7 +20,7 @@ export async function runPhase3(
     const batch = consumers.slice(b * bs, (b + 1) * bs);
     console.log(`[Phase 3] Batch ${b + 1}/${total} (${batch.length} consumers)...`);
     const results = await Promise.allSettled(batch.map((c) =>
-      runConsumerSession({ consumer: c, authors, articles, trustDirectoryUrls, screenshotDir: ssDir })
+      runConsumerSession({ consumer: c, authors, articles, trustDirectoryUrls, screenshotDir: ssDir, generalApiKey: config.trust_server.general_api_key })
     ));
     for (const r of results) {
       if (r.status === "fulfilled") sessionLogs.push(r.value);
@@ -38,7 +38,15 @@ export async function runPhase3(
       if (v.trustIndicator !== expected) indMismatch++;
     }
   }
-  if (sigFails > 0) errors.push(`${sigFails} signature verification failures`);
+  if (sigFails > 0) {
+    const reasonCounts = new Map<string, number>();
+    for (const visit of sessionLogs.flatMap((log) => log.pagesVisited).filter((visit) => !visit.signatureValid)) {
+      const reason = visit.verificationReason || "unknown";
+      reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+    }
+    const summary = [...reasonCounts].map(([reason, count]) => `${reason} (${count})`).join(", ");
+    errors.push(`${sigFails} signature verification failures: ${summary}`);
+  }
   if (indMismatch > 0) errors.push(`${indMismatch} trust indicator mismatches`);
 
   console.log(`[Phase 3] ${sessionLogs.length} sessions, ${sigFails} sig failures, ${indMismatch} indicator mismatches`);

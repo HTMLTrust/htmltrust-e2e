@@ -3,9 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
   normalizeText,
-  extractCanonicalText,
-  canonicalizeClaims,
 } from "@htmltrust/canonicalization";
+import { canonicalizeSignedContent } from "@htmltrust/browser-client";
 import { generateArticle } from "../lib/ollama.js";
 import { HugoPublisher } from "../lib/hugo-publisher.js";
 import { TrustApiClient } from "../lib/trust-api.js";
@@ -17,7 +16,7 @@ import type { ScenarioConfig, AuthorProfile, AIAssistance, ArticleMetadata, Phas
  * Compute a base64-encoded SHA-256 hash of already-canonicalized text.
  * Returns the prefixed form "sha256:<unpadded-base64>".
  */
-function hashCanonical(canonical: string): string {
+export function hashCanonical(canonical: string): string {
   const digest = createHash("sha256").update(canonical, "utf-8").digest("base64").replace(/=+$/, "");
   return `sha256:${digest}`;
 }
@@ -26,29 +25,56 @@ function hashCanonical(canonical: string): string {
  * Compute the content hash of plain text (not HTML). Applies normalizeText
  * then base64-sha256. Use this at publish time when the raw text is known.
  */
-function computeContentHashFromText(text: string): string {
+export function computeContentHashFromText(text: string): string {
   const canonical = normalizeText(text).trim().replace(/\s+/g, " ");
   return hashCanonical(canonical);
 }
 
 /**
- * Compute the content hash of an HTML fragment. Applies extractCanonicalText
- * then base64-sha256. Use this at verify time when only the rendered HTML
- * is available.
+ * Compute the content hash of an HTML fragment using the same signed-content
+ * canonicalizer as browser verification. This includes the provisional signed
+ * semantic attributes (`href`, `src`, `alt`, and `aria-label`) when present.
  */
-function computeContentHashFromHtml(html: string): string {
-  const canonical = extractCanonicalText(html);
+export function computeContentHashFromHtml(html: string, baseUrl: string): string {
+  const canonical = canonicalizeSignedContent(html, baseUrl);
   return hashCanonical(canonical);
 }
 
 /**
- * Compute the claims hash from a canonical claims map. Serializes claims
- * via canonicalizeClaims (sorted name=value pairs, newline-joined), then
- * hashes with base64-sha256.
+ * Compute the claims hash from the exact direct-child <meta> claim map.
+ * The current draft serializes every normalized claim as `name:content\n`,
+ * sorted by normalized claim name, and hashes the concatenated byte string.
  */
-function computeClaimsHash(claims: Record<string, string>): string {
-  const canonical = canonicalizeClaims(claims);
+export function computeClaimsHash(claims: Record<string, string>): string {
+  const encoder = new TextEncoder();
+  const compareUtf8 = (a: string, b: string): number => {
+    const aa = encoder.encode(a);
+    const bb = encoder.encode(b);
+    const len = Math.min(aa.length, bb.length);
+    for (let i = 0; i < len; i++) {
+      if (aa[i] !== bb[i]) return aa[i] - bb[i];
+    }
+    return aa.length - bb.length;
+  };
+  const canonical = Object.entries(claims)
+    .map(([name, content]) => [normalizeText(name), normalizeText(String(content))] as const)
+    .sort(([a], [b]) => compareUtf8(a, b))
+    .map(([name, content]) => `${name}:${content}\n`)
+    .join("");
   return hashCanonical(canonical);
+}
+
+export function serializedOriginForDomain(domain: string): string {
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(domain) ? domain : `http://${domain}`;
+  return new URL(candidate).origin;
+}
+
+export function buildSignedClaims(author: string, signedAt: string, claims: ArticleMetadata): Record<string, string> {
+  return {
+    author,
+    "signed-at": signedAt,
+    ...Object.fromEntries(Object.entries(claims).map(([key, value]) => [`claim:${key}`, value])),
+  };
 }
 
 function buildSignedSectionHtml(opts: {
@@ -109,16 +135,14 @@ export async function runPhase2(
         const slug = `article-${i + 1}`;
         let url: string;
 
-        // Build the claims that will appear in the signed-section's <meta> tags.
-        // The browser will extract these and compute the same claims hash to verify.
-        const claimsForSigning: Record<string, string> = {
-          ...(declaredMeta as unknown as Record<string, string>),
-        };
-
-        // Compute the canonical binding fields per spec §2.1
-        const contentHash = computeContentHashFromText(content);
-        const claimsHash = computeClaimsHash(claimsForSigning);
+        // Compute the canonical binding fields per spec. The legacy `domain`
+        // API field carries the serialized Web origin, not a host-only name.
         const signedAt = new Date().toISOString();
+        const publicationOrigin = serializedOriginForDomain(author.domain);
+        const signedClaims = buildSignedClaims(author.name, signedAt, declaredMeta);
+        const innerContentHtml = `<article><p>${content}</p></article>`;
+        const contentHash = computeContentHashFromHtml(innerContentHtml, publicationOrigin);
+        const claimsHash = computeClaimsHash(signedClaims);
 
         if (author.cmsType === "wordpress") {
           // Ask the trust server to sign the binding.
@@ -137,24 +161,24 @@ export async function runPhase2(
           // <signed-section>.
           const sigResult = await trustClient.signContent(author.authorApiKey, {
             contentHash, claimsHash, signedAt,
-            domain: author.domain,
-            claims: claimsForSigning,
+            domain: publicationOrigin,
+            claims: signedClaims,
           });
 
           // Build the signed-section wrapper with the content nested inside.
           // Using the wrapped form (spec §2.1 example): the <signed-section>
           // contains the content, so the browser can extract text from within
           // it unambiguously.
-          const keyId = `http://trust-server:3000/api/authors/${author.id}/public-key`;
+          const keyId = sigResult.keyid;
           const signedSection = buildSignedSectionHtml({
             signature: sigResult.signature,
             keyId,
             contentHash,
-            algorithm: "ed25519",
+            algorithm: sigResult.algorithm,
             author: author.name,
             signedAt,
             claims: declaredMeta,
-            innerContentHtml: `<article><p>${content}</p></article>`,
+            innerContentHtml,
           });
 
           const postBody = signedSection;
@@ -228,20 +252,21 @@ export async function runPhase2(
             continue;
           }
 
-          // Compute canonical hash from the raw article content (same as WP path)
-          const contentHash = computeContentHashFromText(article.content);
-          const claimsForSigning = { ...(article.declaredMetadata as unknown as Record<string, string>) };
-          const claimsHash = computeClaimsHash(claimsForSigning);
           const signedAt = new Date().toISOString();
+          const publicationOrigin = serializedOriginForDomain(author.domain);
+          const signedClaims = buildSignedClaims(author.name, signedAt, article.declaredMetadata);
+          const innerContentHtml = `<article><p>${article.content}</p></article>`;
+          const contentHash = computeContentHashFromHtml(innerContentHtml, publicationOrigin);
+          const claimsHash = computeClaimsHash(signedClaims);
 
           // Sign the canonical binding via the trust server
           const sig = await trustClient.signContent(author.authorApiKey, {
             contentHash, claimsHash, signedAt,
-            domain: author.domain,
-            claims: claimsForSigning,
+            domain: publicationOrigin,
+            claims: signedClaims,
           });
 
-          const keyId = `http://trust-server:3000/api/authors/${author.id}/public-key`;
+          const keyId = sig.keyid;
 
           // Build a new signed-section that wraps the article text inline.
           // We replace the Hugo-generated standalone signed-section with our
@@ -250,11 +275,11 @@ export async function runPhase2(
             signature: sig.signature,
             keyId,
             contentHash,
-            algorithm: "ed25519",
+            algorithm: sig.algorithm,
             author: author.name,
             signedAt,
             claims: article.declaredMetadata,
-            innerContentHtml: `<article><p>${article.content}</p></article>`,
+            innerContentHtml,
           });
 
           // Replace the entire old signed-section block (and the separate

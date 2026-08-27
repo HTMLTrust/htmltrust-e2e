@@ -27,7 +27,7 @@ export async function runPhase4(
   for (let i = 0; i < selected.length; i += config.consumers.batch_size) {
     const batch = selected.slice(i, i + config.consumers.batch_size);
     const results = await Promise.allSettled(batch.map((c) =>
-      runConsumerSession({ consumer: c, authors, articles, trustDirectoryUrls, screenshotDir: ssDir })
+      runConsumerSession({ consumer: c, authors, articles, trustDirectoryUrls, screenshotDir: ssDir, generalApiKey: config.trust_server.general_api_key })
     ));
     for (const r of results) {
       if (r.status === "fulfilled") sessionLogs.push(r.value);

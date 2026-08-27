@@ -23,7 +23,7 @@ export class HugoPublisher {
       `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title>{{ .Title }}</title></head>\n<body><h1>{{ .Title }}</h1>\n{{ range .Pages }}<a href="{{ .Permalink }}">{{ .Title }}</a>\n{{ end }}</body></html>`);
 
     await writeFile(path.join(this.siteDir, "layouts/partials/htmltrust-signed-section.html"),
-      `{{ if .Params.htmltrust }}{{ if .Params.htmltrust.sign }}\n{{ $plain := .Plain }}\n{{ $canon := $plain | replaceRE "\\\\s+" " " | strings.TrimSpace }}\n{{ $hash := sha256 $canon }}\n<signed-section content-hash="sha256:{{ $hash }}" style="display: block;">\n  <meta name="author" content="{{ .Params.author | default .Site.Params.author }}">\n  <meta name="signed-at" content="{{ now.Format "2006-01-02T15:04:05Z07:00" }}">\n  {{ range $key, $value := .Params.htmltrust.claims }}\n  <meta name="claim:{{ $key }}" content="{{ $value }}">\n  {{ end }}\n</signed-section>\n{{ end }}{{ end }}`);
+      `{{ if .Params.htmltrust }}{{ if .Params.htmltrust.sign }}\n<signed-section data-htmltrust-placeholder="true" style="display: block;">\n  <meta name="author" content="{{ .Params.author | default .Site.Params.author }}">\n  <meta name="signed-at" content="{{ now.Format "2006-01-02T15:04:05Z07:00" }}">\n  {{ range $key, $value := .Params.htmltrust.claims }}\n  <meta name="claim:{{ $key }}" content="{{ $value }}">\n  {{ end }}\n</signed-section>\n{{ end }}{{ end }}`);
 
     await writeFile(path.join(this.siteDir, "content/_index.md"),
       `---\ntitle: "${this.authorName} Blog"\n---\nWelcome to ${this.authorName}'s blog.`);

@@ -13,7 +13,10 @@ describe("HugoPublisher", () => {
     const pub = new HugoPublisher(workDir, "Author 6", "author6.htmltrust.test");
     await pub.scaffold();
     const config = await readFile(path.join(workDir, "hugo.toml"), "utf-8");
+    const partial = await readFile(path.join(workDir, "layouts/partials/htmltrust-signed-section.html"), "utf-8");
     expect(config).toContain("author6.htmltrust.test");
+    expect(partial).toContain('data-htmltrust-placeholder="true"');
+    expect(partial).not.toContain("sha256:");
   });
 
   it("writes article markdown with HTMLTrust frontmatter", async () => {

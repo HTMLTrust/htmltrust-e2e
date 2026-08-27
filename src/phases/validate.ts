@@ -35,6 +35,9 @@ export async function runPhase5(
     totalPageVisits: allLogs.reduce((s, l) => s + l.pagesVisited.length, 0),
     verificationSuccesses: allLogs.reduce((s, l) => s + l.pagesVisited.filter((v) => v.signatureValid).length, 0),
     verificationFailures: allLogs.reduce((s, l) => s + l.pagesVisited.filter((v) => !v.signatureValid).length, 0),
+    sourceSnapshotMatches: allLogs.reduce((s, l) => s + l.pagesVisited.filter((v) => v.verificationInputState === "rendered-match").length, 0),
+    staleSourceSnapshots: allLogs.reduce((s, l) => s + l.pagesVisited.filter((v) => v.verificationInputState === "stale").length, 0),
+    sourceOnlyVerifications: allLogs.reduce((s, l) => s + l.pagesVisited.filter((v) => v.verificationInputState === "source-only").length, 0),
     totalVotes: allLogs.reduce((s, l) => s + l.votesCast.length, 0),
     screenshots: allLogs.reduce((s, l) => s + l.screenshots.length, 0),
   };
@@ -54,7 +57,7 @@ export async function runPhase5(
     + authorSummary.map((a) => `${a.authorId},${a.name},${a.cmsType},${a.maliciousPct},${a.totalArticles},${a.maliciousArticles},${a.trustScore},${a.trustVotes},${a.distrustVotes},${a.reports}`).join("\n");
   await writeFile(path.join(resultsDir, "summary.csv"), csv);
 
-  const report = `# HTMLTrust E2E Results\n\n## Config\n- Seed: ${config.seed}\n- Authors: ${authors.length}\n- Consumers: ${config.consumers.count}\n- Articles: ${articles.length}\n\n## Verification\n- Successes: ${stats.verificationSuccesses}\n- Failures: ${stats.verificationFailures}\n\n## Detection\n- Precision: ${(detection.precision * 100).toFixed(1)}%\n- Recall: ${(detection.recall * 100).toFixed(1)}%\n- False positives: ${fp}\n\n## Authors\n| Name | CMS | Mal% | Score | Reports |\n|------|-----|------|-------|---------|\n${authorSummary.map((a) => `| ${a.name} | ${a.cmsType} | ${(a.maliciousPct * 100).toFixed(0)}% | ${a.trustScore.toFixed(3)} | ${a.reports} |`).join("\n")}\n`;
+  const report = `# HTMLTrust E2E Results\n\n## Config\n- Seed: ${config.seed}\n- Authors: ${authors.length}\n- Consumers: ${config.consumers.count}\n- Articles: ${articles.length}\n\n## Verification\n- Successes: ${stats.verificationSuccesses}\n- Failures: ${stats.verificationFailures}\n- Source/rendered matches: ${stats.sourceSnapshotMatches}\n- Stale source snapshots: ${stats.staleSourceSnapshots}\n- Source-only verifications: ${stats.sourceOnlyVerifications}\n\n## Detection\n- Precision: ${(detection.precision * 100).toFixed(1)}%\n- Recall: ${(detection.recall * 100).toFixed(1)}%\n- False positives: ${fp}\n\n## Authors\n| Name | CMS | Mal% | Score | Reports |\n|------|-----|------|-------|---------|\n${authorSummary.map((a) => `| ${a.name} | ${a.cmsType} | ${(a.maliciousPct * 100).toFixed(0)}% | ${a.trustScore.toFixed(3)} | ${a.reports} |`).join("\n")}\n`;
   await writeFile(path.join(resultsDir, "report.md"), report);
 
   console.log(`[Phase 5] Results exported to ${resultsDir}`);
