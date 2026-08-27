@@ -133,6 +133,8 @@ export interface PageVisit {
   signatureValid: boolean;
   contentHashValid: boolean;
   trustIndicator: TrustIndicator;
+  verificationInputState: "source-only" | "stale" | "rendered-match";
+  verificationReason?: string;
 }
 
 export interface VoteCast {
@@ -158,9 +160,13 @@ export interface CreateAuthorResponse {
 
 export interface SignContentResponse {
   contentHash: string;
+  claimsHash: string;
+  signedAt: string;
   domain: string;
   authorId: string;
   signature: string;
+  algorithm: string;
+  keyid: string;
   claims: Record<string, string>;
   createdAt: string;
 }

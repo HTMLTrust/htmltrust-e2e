@@ -7,10 +7,27 @@ COPY htmltrust-canonicalization/javascript /tmp/canonicalization
 # Copy server source
 COPY htmltrust-server-reference/package*.json ./
 
-# Replace the GitHub dep with the local copy, then install
-RUN sed -i 's|"@htmltrust/canonicalization":.*|"@htmltrust/canonicalization": "file:///tmp/canonicalization",|' package.json \
-    && npm install --production
+# The published package.json points @htmltrust/canonicalization at a private
+# GitHub repo; this image builds against the sibling checkout instead. That
+# swap used to be a `sed` on package.json, which fails open -- if the
+# dependency line ever moves or reformats, the substitution silently does
+# nothing and the build falls back to fetching whatever the GitHub ref resolves
+# to. `npm pkg set` edits the JSON structurally and errors if it cannot.
+#
+# `npm ci` is not usable here: it requires package.json and package-lock.json
+# to agree, and rewriting a dependency's source is exactly what breaks that
+# agreement. Restoring `npm ci` means removing the swap -- publish
+# @htmltrust/canonicalization to a registry this build can reach, or declare
+# the two as npm workspaces so the lockfile already describes the local path.
+# Until then --ignore-scripts is what keeps dependency install hooks from
+# running during the image build.
+RUN npm pkg set "dependencies.@htmltrust/canonicalization=file:///tmp/canonicalization" \
+    && npm install --omit=dev --ignore-scripts --no-audit --no-fund
 
 COPY htmltrust-server-reference/ .
 EXPOSE 3000
+
+# Drop root. The server only reads its source and talks to Mongo over the
+# network, so it has no reason to run as uid 0 inside the container.
+USER node
 CMD ["node", "src/server.js"]

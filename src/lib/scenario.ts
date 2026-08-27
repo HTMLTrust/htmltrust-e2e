@@ -4,7 +4,14 @@ import type { ScenarioConfig, AuthorProfile, ConsumerProfile, CmsType } from "..
 
 export async function loadScenario(path: string): Promise<ScenarioConfig> {
   const raw = await readFile(path, "utf-8");
-  return parse(raw) as ScenarioConfig;
+  const config = parse(raw) as ScenarioConfig;
+
+  config.trust_server.url = process.env.HTMLTRUST_TRUST_SERVER_URL || config.trust_server.url;
+  config.trust_server.general_api_key = process.env.HTMLTRUST_GENERAL_API_KEY || config.trust_server.general_api_key;
+  config.trust_server.admin_api_key = process.env.HTMLTRUST_ADMIN_API_KEY || config.trust_server.admin_api_key;
+  config.nginx_proxy_url = process.env.HTMLTRUST_NGINX_PROXY_URL || config.nginx_proxy_url;
+
+  return config;
 }
 
 function createRng(seed: number): () => number {

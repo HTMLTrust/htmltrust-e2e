@@ -3,12 +3,13 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import {
   verifySignedSection,
+  extractSignedSections,
   evaluateTrustPolicy,
-  defaultResolverChain,
   type VerifyResult,
   type TrustEvaluation,
   type TrustInput,
 } from "@htmltrust/browser-client";
+import { directUrlResolver } from "@htmltrust/canonicalization";
 import type { ConsumerProfile, AuthorProfile, Article, SessionLog, TrustIndicator } from "../types.js";
 
 interface SessionOptions {
@@ -23,6 +24,7 @@ interface SessionOptions {
    * session normalizes both forms.
    */
   trustDirectoryUrls: string[] | string;
+  generalApiKey: string;
 }
 
 /** Shape returned by the Node-side __htmltrustVerifyAndScore helper. */
@@ -84,10 +86,17 @@ async function fetchReputationFromE2eServer(
   }
 }
 
-/** Pull authorId out of a `.../authors/{id}/public-key` keyid URL. Null if not that shape. */
-function authorIdFromKeyid(keyid: string): string | null {
+/** Resolve the legacy author-key URL or the canonical directory-key URL. */
+function authorIdFromKeyid(keyid: string, authors: AuthorProfile[]): string | null {
   const m = keyid.match(/\/authors\/([^/]+)/);
-  return m ? m[1] : null;
+  if (m) return m[1];
+
+  try {
+    const keyRecordId = new URL(keyid).pathname.match(/\/keys\/([^/]+)$/)?.[1];
+    return authors.find((author) => author.keyId === keyRecordId)?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -104,10 +113,13 @@ function authorIdFromKeyid(keyid: string): string | null {
  */
 const DOM_SCRIPT_BODY = `
   const results = [];
+  const sourceSections = Array.isArray(window.__htmltrustSourceSections) ? window.__htmltrustSourceSections : [];
   const sections = document.querySelectorAll("signed-section[signature]");
   for (const section of sections) {
-    const domain = window.location.hostname;
-    const html = section.outerHTML;
+    const origin = window.location.origin;
+    const renderedHtml = section.outerHTML;
+    const sourceHtml = sourceSections[results.length] || "";
+    const html = sourceHtml || renderedHtml;
 
     // Best-effort author display name from inner <meta name="author">,
     // preserved purely for badge data attributes.
@@ -119,7 +131,12 @@ const DOM_SCRIPT_BODY = `
       }
     }
 
-    const score = await window.__htmltrustVerifyAndScore({ html, domain });
+    const score = await window.__htmltrustVerifyAndScore({
+      html,
+      renderedHtml,
+      origin,
+      baseUrl: window.location.href
+    });
 
     // Map indicator -> legacy class suffix used in tests/reports.
     const indicator = score.trust.indicator === "green" ? "trusted"
@@ -130,7 +147,7 @@ const DOM_SCRIPT_BODY = `
       .replace("warning", "untrusted");
 
     const cryptoValid = score.verify.valid === true;
-    const contentHashValid = cryptoValid || (score.verify.reason !== "content hash mismatch");
+    const contentHashValid = cryptoValid || (score.verify.reason !== "content-hash-mismatch");
 
     // --- Inject badges (DOM structure must match the previous impl exactly) ---
     const badges = document.createElement("div");
@@ -191,6 +208,8 @@ const DOM_SCRIPT_BODY = `
       trustScore: score.trust.score,
       indicator: indicator,
       reports: score.reports,
+      verificationInputState: score.verify.inputState,
+      verificationReason: score.verify.reason,
     });
   }
   return results;
@@ -216,28 +235,31 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
 
-  // Node-side SHA-256: returns lowercase hex (verifySignedSection prepends
-  // "sha256:"). Used because the simulation pages run over HTTP, where
+  // Node-side SHA-256: returns canonical unpadded standard Base64, matching
+  // the current HTMLTrust wire format. Used because simulation pages run over HTTP, where
   // SubtleCrypto is blocked.
   const nodeHash = async (canonical: string): Promise<string> =>
-    createHash("sha256").update(canonical, "utf-8").digest("hex");
+    createHash("sha256").update(canonical, "utf-8").digest("base64").replace(/=+$/, "");
 
-  // Build the resolver chain once per session. directUrlResolver covers
-  // the e2e trust server's keyid URLs (`http://trust-server:.../authors/{id}/public-key`);
-  // didWebResolver and trustDirectoryResolver cover the spec-canonical
-  // shapes that may appear in future fixtures.
-  const keyResolvers = defaultResolverChain({ directories: directoryUrls });
+  // Build the resolver chain once per session. The e2e harness intentionally
+  // uses local plain-HTTP key URLs inside Docker, so it uses the lower-level
+  // direct URL resolver here instead of the browser client's production
+  // network-policy wrapper.
+  const keyResolvers = [directUrlResolver()];
 
   await context.exposeFunction(
     "__htmltrustVerifyAndScore",
-    async (input: { html: string; domain: string }): Promise<VerifyAndScoreResult> => {
+    async (input: { html: string; renderedHtml: string; origin: string; baseUrl: string }): Promise<VerifyAndScoreResult> => {
       const verify = await verifySignedSection(input.html, {
         keyResolvers,
-        domain: input.domain,
+        origin: input.origin,
+        baseUrl: input.baseUrl,
+        renderedSection: input.renderedHtml,
         hash: nodeHash,
+        debug: process.env.HTMLTRUST_DEBUG === "1",
       });
 
-      const authorId = verify.keyid ? authorIdFromKeyid(verify.keyid) : null;
+      const authorId = verify.keyid ? authorIdFromKeyid(verify.keyid, authors) : null;
 
       // Layer 2 baseline from the lib. We pass an EMPTY directory list
       // because the lib's reputation URL shape (`<base>/keys/<keyid>/reputation`)
@@ -317,10 +339,20 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
 
       const article = authorArticles[Math.floor(Math.random() * authorArticles.length)];
       try {
-        await page.goto(article.url, { waitUntil: "networkidle", timeout: 15_000 });
+        const response = await page.goto(article.url, { waitUntil: "networkidle", timeout: 15_000 });
+        let sourceSections: string[] = [];
+        try {
+          sourceSections = response ? extractSignedSections(await response.text()) : [];
+        } catch {
+          sourceSections = [];
+        }
 
         // Run the DOM walker. It calls __htmltrustVerifyAndScore per
-        // signed-section, which does verify + policy + reputation Node-side.
+        // signed-section, preferring the original source snapshot and
+        // comparing it to the rendered DOM when both are available.
+        await page.evaluate((sections) => {
+          (window as unknown as { __htmltrustSourceSections?: string[] }).__htmltrustSourceSections = sections;
+        }, sourceSections);
         const asyncExpression = `(async () => { ${DOM_SCRIPT_BODY} })()`;
         const results = (await page.evaluate(asyncExpression)) as Array<{
           authorId: string | null;
@@ -329,6 +361,8 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
           trustScore: number;
           indicator: string;
           reports: number;
+          verificationInputState: "source-only" | "stale" | "rendered-match";
+          verificationReason?: string;
         }>;
         const result = results && results.length > 0 ? results[0] : null;
 
@@ -350,6 +384,8 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
           signatureValid: sigValid,
           contentHashValid,
           trustIndicator: indicator,
+          verificationInputState: result?.verificationInputState ?? "source-only",
+          verificationReason: result?.verificationReason,
         });
 
         // Cast vote by clicking button (and also POST to API for reliability)
@@ -366,7 +402,7 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
           try {
             await fetch(`${primaryDirectoryUrl}/api/votes`, {
               method: "POST",
-              headers: { "Content-Type": "application/json", "X-API-KEY": "sim_general_key" },
+              headers: { "Content-Type": "application/json", "X-API-KEY": opts.generalApiKey },
               body: JSON.stringify({
                 userId: consumer.id,
                 targetType: "AUTHOR",
@@ -397,6 +433,8 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
           signatureValid: false,
           contentHashValid: false,
           trustIndicator: "verified-unknown",
+          verificationInputState: "source-only",
+          verificationReason: err instanceof Error ? err.message : String(err),
         });
       }
     }
