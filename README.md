@@ -2,7 +2,7 @@
 
 This repository runs a Docker-backed HTMLTrust simulation. It creates trust-directory records, publishes signed WordPress and Hugo pages, verifies them with Playwright, records votes and reports, and writes a report under `results/`.
 
-The harness is private and expects sibling repositories. Install and run it from the layout below.
+The harness is public and expects sibling repositories. Install and run it from the layout below.
 
 ## Required checkout layout
 
@@ -19,6 +19,17 @@ htmltrust/
 ```
 
 The Docker build reads the canonicalization and server directories from the parent. Compose mounts the WordPress plugin from `htmltrust-cms-reference`. The browser phase mounts `htmltrust-browser-reference/build/chromium`.
+
+From an empty parent directory, clone the required repositories with:
+
+```bash
+git clone https://github.com/HTMLTrust/htmltrust-canonicalization.git
+git clone https://github.com/HTMLTrust/htmltrust-browser-client.git
+git clone https://github.com/HTMLTrust/htmltrust-browser-reference.git
+git clone https://github.com/HTMLTrust/htmltrust-cms-reference.git
+git clone https://github.com/HTMLTrust/htmltrust-e2e.git
+git clone https://github.com/HTMLTrust/htmltrust-server-reference.git
+```
 
 ## Prerequisites
 
