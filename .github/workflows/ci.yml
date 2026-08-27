@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test E2E harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: htmltrust-e2e
+          persist-credentials: false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: HTMLTrust/htmltrust-canonicalization
+          ref: 79b0d52fecd958f8fc7ade713fe0799ca1e79626
+          path: htmltrust-canonicalization
+          persist-credentials: false
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: HTMLTrust/htmltrust-browser-client
+          ref: 09e8c7552c8111a2cedd83fa45f4ffe3811bf5ca
+          path: htmltrust-browser-client
+          persist-credentials: false
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+
+      - name: Build browser client
+        working-directory: htmltrust-browser-client
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Install harness
+        working-directory: htmltrust-e2e
+        run: npm ci --ignore-scripts
+
+      - name: Test and type-check
+        working-directory: htmltrust-e2e
+        run: |
+          npm test
+          npm run build
+
+      - name: Audit dependencies
+        working-directory: htmltrust-e2e
+        run: npm audit --audit-level=low
