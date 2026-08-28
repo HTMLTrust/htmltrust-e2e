@@ -55,6 +55,8 @@ if [[ ! -f "$repo_dir/$scenario" ]]; then
 fi
 
 echo "Building the pinned browser packages"
+npm --prefix "$repo_dir/../htmltrust-canonicalization/javascript" install \
+  --package-lock=false --ignore-scripts --no-audit --no-fund
 npm --prefix "$repo_dir/../htmltrust-browser-client" ci
 npm --prefix "$repo_dir/../htmltrust-browser-client" run build
 npm --prefix "$repo_dir/../htmltrust-browser-reference" ci --ignore-scripts=false

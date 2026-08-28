@@ -37,6 +37,10 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install canonicalization runtime dependency
+        working-directory: htmltrust-canonicalization/javascript
+        run: npm install --package-lock=false --ignore-scripts --no-audit --no-fund
+
       - name: Build browser client
         working-directory: htmltrust-browser-client
         run: |

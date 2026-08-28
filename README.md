@@ -73,11 +73,14 @@ The browser phase uses the sibling browser-reference checkout and its Chromium b
 
 ## Install and check the harness
 
-Build both local package dependencies before installing this repository. The
-browser client's `dist/` directory is ignored by Git, and npm needs it when it
-installs the local `file:` dependency.
+Install the canonicalizer's parser dependency and build the browser client
+before installing this repository. The browser client's `dist/` directory is
+ignored by Git, and npm needs it when it installs the local `file:` dependency.
 
 ```bash
+cd ../htmltrust-canonicalization/javascript
+npm install --package-lock=false
+
 cd ../htmltrust-browser-client
 npm ci
 npm run build
