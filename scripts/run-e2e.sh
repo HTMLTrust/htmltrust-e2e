@@ -22,7 +22,7 @@ required_siblings=(
 
 declare -A expected_revisions=(
   [htmltrust-canonicalization]=5e51040dcaaf50935e245702bdefbc18a1d542ce
-  [htmltrust-browser-client]=39dc873c368ff53b5d0295fbe4d8f493dea52f90
+  [htmltrust-browser-client]=f21504e170c6b29e91eda3bb491bf4580e5f5a86
   [htmltrust-browser-reference]=407bace3ad792384ba623b5db795f3f32acd16ca
   [htmltrust-cms-reference]=69aafdfad2c81766f2717b88525f2569370f96cd
   [htmltrust-server-reference]=56ab5c06e901f8f48753e3a511dd9dda755b9bac

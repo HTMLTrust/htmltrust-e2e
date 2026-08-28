@@ -51,7 +51,7 @@ The frozen v1 integration uses these immutable revisions:
 
 ```bash
 git -C htmltrust-canonicalization checkout 5e51040dcaaf50935e245702bdefbc18a1d542ce
-git -C htmltrust-browser-client checkout 39dc873c368ff53b5d0295fbe4d8f493dea52f90
+git -C htmltrust-browser-client checkout f21504e170c6b29e91eda3bb491bf4580e5f5a86
 git -C htmltrust-browser-reference checkout 407bace3ad792384ba623b5db795f3f32acd16ca
 git -C htmltrust-cms-reference checkout 69aafdfad2c81766f2717b88525f2569370f96cd
 git -C htmltrust-server-reference checkout 56ab5c06e901f8f48753e3a511dd9dda755b9bac
