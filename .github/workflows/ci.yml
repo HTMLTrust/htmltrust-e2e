@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: HTMLTrust/htmltrust-browser-client
-          ref: 09e8c7552c8111a2cedd83fa45f4ffe3811bf5ca
+          ref: 698a6fba7ada94ea1e26348dda0e1c87e8dd8fc9
           path: htmltrust-browser-client
           persist-credentials: false
 
