@@ -1,7 +1,32 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runConsumerSession } from "../lib/playwright-session.js";
-import type { ScenarioConfig, AuthorProfile, Article, ConsumerProfile, SessionLog, PhaseResult, TrustDirectoryConfig } from "../types.js";
+import type {
+  ScenarioConfig,
+  AuthorProfile,
+  Article,
+  ConsumerProfile,
+  SessionLog,
+  PhaseResult,
+  TrustDirectoryConfig,
+  PageVisit,
+  TrustIndicator,
+} from "../types.js";
+
+/**
+ * Check the browser-client's default score thresholds and report override.
+ * Directory votes can move a personally trusted signer below the green
+ * threshold, so membership in the personal list alone is not an expected
+ * final indicator.
+ */
+export function expectedTrustIndicator(
+  visit: Pick<PageVisit, "trustScore" | "directoryResults">,
+): TrustIndicator {
+  if (visit.directoryResults.some((result) => (result.reports ?? 0) > 0)) return "warning";
+  if (visit.trustScore < 20) return "warning";
+  if (visit.trustScore >= 70) return "trusted";
+  return "verified-unknown";
+}
 
 export async function runPhase3(
   config: ScenarioConfig, authors: AuthorProfile[], articles: Article[],
@@ -34,13 +59,7 @@ export async function runPhase3(
   for (const log of sessionLogs) {
     for (const v of log.pagesVisited) {
       if (!v.signatureValid) sigFails++;
-      const author = authors.find((candidate) => candidate.id === v.authorId);
-      const hasReport = v.directoryResults.some((result) => (result.reports ?? 0) > 0);
-      const expected = hasReport
-        ? "warning"
-        : author && log.personalTrustList.includes(author.keyId)
-          ? "trusted"
-          : "verified-unknown";
+      const expected = expectedTrustIndicator(v);
       if (v.trustIndicator !== expected) indMismatch++;
     }
   }
