@@ -12,6 +12,7 @@
     "stack:down": "docker compose down -v",
     "smoke": "tsx src/smoke-test.ts scenario-small.yaml",
     "browser:small": "docker compose run --rm --entrypoint npx playwright tsx src/run-phases-3-5.ts scenario-small.yaml",
+    "test:browser": "docker compose run --rm --no-deps --entrypoint npx playwright tsx scripts/browser-lifecycle-test.ts",
     "e2e:small": "./scripts/run-e2e.sh scenario-small.yaml",
     "test": "vitest run",
     "test:watch": "vitest"

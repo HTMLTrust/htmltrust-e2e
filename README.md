@@ -12,6 +12,12 @@ This harness publishes v1 signed content through WordPress and Hugo, serves it o
 ## Choose a path
 
 - Run `npm test && npm run build` when you are changing TypeScript helpers.
+- Run `npm test -- tests/lib/playwright-session.test.ts && npm run build` for
+  the browser lifecycle evidence checks (source mapping, nested markers,
+  mutation invalidation, and reload snapshot recovery).
+- Run `npm run test:browser` for the same lifecycle checks in the production
+  DOM walker. This uses the checked-in Playwright Docker image and does not
+  start the integration stack; `npm test` remains browser-download-free.
 - Run `npm run e2e:small` for the complete three-author simulation.
 - Use the split commands below when you need to inspect the stack between publication and browser verification.
 
@@ -44,11 +50,11 @@ git clone https://github.com/HTMLTrust/htmltrust-server-reference.git
 The frozen v1 integration uses these immutable revisions:
 
 ```bash
-git -C htmltrust-canonicalization checkout b0c8f305425de190a7f209ac117d34f88c2b1946
-git -C htmltrust-browser-client checkout d25c6d3c2d0f4d67483da20853f22e94a11b89cc
-git -C htmltrust-browser-reference checkout 5237f07098da8b6542f0fd8f1c613ae8dbf4e6dd
+git -C htmltrust-canonicalization checkout 5e51040dcaaf50935e245702bdefbc18a1d542ce
+git -C htmltrust-browser-client checkout 39dc873c368ff53b5d0295fbe4d8f493dea52f90
+git -C htmltrust-browser-reference checkout 407bace3ad792384ba623b5db795f3f32acd16ca
 git -C htmltrust-cms-reference checkout 69aafdfad2c81766f2717b88525f2569370f96cd
-git -C htmltrust-server-reference checkout f84f51482ba2a925d9b5ff148185adf6dedef566
+git -C htmltrust-server-reference checkout 56ab5c06e901f8f48753e3a511dd9dda755b9bac
 ```
 
 The one-command runner checks these revisions and requires clean sibling working
