@@ -21,7 +21,7 @@ authors:
 
 consumers:
   count: 1000
-  trusted_authors: [0, 5]
+  personal_trust_keys: [0, 5]
   visit_pct: [0.3, 0.8]
   vote_probability: 0.4
   batch_size: 20
@@ -33,10 +33,27 @@ researcher:
 
 post_report_consumers: 50
 
-trust_server:
-  url: "http://trust-server:3000"
-  general_api_key: sim_general_key
-  admin_api_key: sim_admin_key
+trust_directories:
+  - id: alpha
+    url: "http://localhost:3000"
+    container_url: "http://trust-directory-alpha:3000"
+    public_url: "https://trust-a.htmltrust.test"
+    weight: 1.0
+    publisher: true
+    reports: false
+    initial_opinion: support
+    general_api_key: sim_general_key
+    admin_api_key: sim_admin_key
+  - id: beta
+    url: "http://localhost:3001"
+    container_url: "http://trust-directory-beta:3000"
+    public_url: "https://trust-b.htmltrust.test"
+    weight: 0.75
+    publisher: false
+    reports: true
+    initial_opinion: challenge
+    general_api_key: sim_general_key
+    admin_api_key: sim_admin_key
 
 ollama:
   model: "llama3.2:3b"

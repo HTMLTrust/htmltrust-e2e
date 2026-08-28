@@ -42,14 +42,13 @@ async function main(): Promise<void> {
 
     const articles = tracker.getManifest().articles;
 
-    const trustDirectoryUrls = [config.trust_server.url];
-    const { result: p3, sessionLogs } = await runPhase3(config, authors, articles, consumers, trustDirectoryUrls, E2E_DIR);
+    const { result: p3, sessionLogs } = await runPhase3(config, authors, articles, consumers, config.trust_directories, E2E_DIR);
     results.push(p3);
 
     const { result: p35, reports } = await runPhase35(config, authors, articles, E2E_DIR);
     results.push(p35);
 
-    const { result: p4, sessionLogs: postLogs } = await runPhase4(config, authors, articles, consumers, sessionLogs, reports, trustDirectoryUrls, E2E_DIR);
+    const { result: p4, sessionLogs: postLogs } = await runPhase4(config, authors, articles, consumers, sessionLogs, reports, config.trust_directories, E2E_DIR);
     results.push(p4);
 
     const p5 = await runPhase5(config, authors, articles, sessionLogs, postLogs, reports, E2E_DIR);

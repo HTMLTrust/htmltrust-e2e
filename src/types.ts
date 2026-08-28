@@ -7,18 +7,7 @@ export interface ScenarioConfig {
   consumers: ConsumerConfig;
   researcher: ResearcherConfig;
   post_report_consumers: number;
-  /**
-   * Trust directory configuration (formerly `trust_server`). For now this
-   * carries the single-directory shape used by every existing scenario YAML;
-   * downstream code (playwright-session) accepts a list of directory URLs
-   * via `trustDirectoryUrls` and treats this as one entry of that list.
-   *
-   * TODO(scenario-yaml): scenario.yaml / scenario-small.yaml still use the
-   * old `trust_server:` key. Migrate them to a `trust_directories:` array
-   * once the multi-directory simulation work lands. Until then we accept
-   * both keys here.
-   */
-  trust_server: TrustDirectoryConfig;
+  trust_directories: TrustDirectoryConfig[];
   ollama: OllamaConfig;
   nginx_proxy_url?: string; // e.g. "https://localhost:18443" when running from host
 }
@@ -38,7 +27,7 @@ export interface MaliciousProfile {
 
 export interface ConsumerConfig {
   count: number;
-  trusted_authors: [number, number];
+  personal_trust_keys: [number, number];
   visit_pct: [number, number];
   vote_probability: number;
   batch_size: number;
@@ -50,21 +39,26 @@ export interface ResearcherConfig {
   report_threshold: number;
 }
 
-/**
- * Configuration for a single trust directory (formerly "trust server").
- *
- * Renamed to align with the spec terminology — the prototype's "trust
- * server" is a special case of a generalized trust directory. See
- * src/lib/trust-api.ts for the API shape.
- */
 export interface TrustDirectoryConfig {
+  /** Stable scenario identifier used in evidence and environment overrides. */
+  id: string;
+  /** API URL used by the host-side orchestrator. */
   url: string;
+  /** API URL used from containers on the Compose network. */
+  container_url: string;
+  /** HTTPS origin exposed to browser policy and embedded key identifiers. */
+  public_url: string;
+  /** Contribution multiplier applied by consumer trust policy. */
+  weight: number;
+  /** Exactly one directory owns the publishing identity in a scenario. */
+  publisher: boolean;
+  /** Whether researcher reports are submitted to this directory. */
+  reports: boolean;
+  /** Deterministic initial opinion used by the federation conflict scenario. */
+  initial_opinion: "support" | "challenge" | "neutral";
   general_api_key: string;
   admin_api_key: string;
 }
-
-/** @deprecated Use TrustDirectoryConfig. Retained for legacy scenario YAML. */
-export type TrustServerConfig = TrustDirectoryConfig;
 
 export interface OllamaConfig {
   model: string;
@@ -81,13 +75,19 @@ export type TrustIndicator = "trusted" | "verified-unknown" | "warning";
 export interface AuthorProfile {
   id: string;
   name: string;
-  authorApiKey: string;
+  /** Full key identifier used by signed content and personal trust policy. */
   keyId: string;
+  directoryIdentities: Record<string, AuthorDirectoryIdentity>;
   cmsType: CmsType;
   domain: string;
   malicious_pct: number;
   wpContainerName?: string;
-  wpAppPassword?: string; // WordPress Application Password for REST API
+}
+
+export interface AuthorDirectoryIdentity {
+  signerId: string;
+  authorId?: string;
+  keyRecordId?: string;
 }
 
 export interface Article {
@@ -112,7 +112,12 @@ export interface ArticleMetadata {
 
 export interface ConsumerProfile {
   id: string;
-  trustedAuthors: string[];
+  personalTrustList: string[];
+  directorySubscriptions: Array<{
+    id: string;
+    url: string;
+    weight: number;
+  }>;
   visitAuthors: string[];
   willVote: boolean;
   captureScreenshots: boolean;
@@ -120,7 +125,7 @@ export interface ConsumerProfile {
 
 export interface SessionLog {
   consumerId: string;
-  trustedAuthors: string[];
+  personalTrustList: string[];
   pagesVisited: PageVisit[];
   votesCast: VoteCast[];
   screenshots: string[];
@@ -132,13 +137,27 @@ export interface PageVisit {
   timestamp: number;
   signatureValid: boolean;
   contentHashValid: boolean;
+  trustScore: number;
   trustIndicator: TrustIndicator;
   verificationInputState: "source-only" | "stale" | "rendered-match";
   verificationReason?: string;
+  directoryResults: DirectoryQueryResult[];
+}
+
+export interface DirectoryQueryResult {
+  directoryId: string;
+  url: string;
+  weight: number;
+  status: "ok" | "unavailable" | "malformed";
+  score?: number;
+  reports?: number;
+  contribution?: number;
+  latencyMs: number;
 }
 
 export interface VoteCast {
   authorId: string;
+  directoryId: string;
   vote: VoteType;
   timestamp: number;
 }

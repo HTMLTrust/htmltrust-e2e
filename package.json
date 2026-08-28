@@ -12,7 +12,10 @@
     "stack:down": "docker compose down -v",
     "smoke": "tsx src/smoke-test.ts scenario-small.yaml",
     "browser:small": "docker compose run --rm --entrypoint npx playwright tsx src/run-phases-3-5.ts scenario-small.yaml",
+    "analyze": "python3 analysis/analyze.py results",
+    "test:analysis": "python3 -m unittest discover -s analysis -p 'test_*.py'",
     "test:browser": "docker compose run --rm --no-deps --entrypoint npx playwright tsx scripts/browser-lifecycle-test.ts",
+    "test:wordpress-local-signing": "docker compose run --rm --entrypoint npx playwright tsx scripts/wordpress-local-signing-test.ts",
     "e2e:small": "./scripts/run-e2e.sh scenario-small.yaml",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -20,13 +23,13 @@
   "dependencies": {
     "@htmltrust/browser-client": "file:../htmltrust-browser-client",
     "@htmltrust/canonicalization": "file:../htmltrust-canonicalization/javascript",
-    "playwright": "^1.52.0",
-    "yaml": "^2.7.0"
+    "playwright": "1.59.1",
+    "yaml": "2.8.3"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.2.7"
+    "@types/node": "22.19.17",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
   }
 }

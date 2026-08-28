@@ -9,7 +9,7 @@ import {
 import { canonicalizeSignedContent } from "@htmltrust/browser-client";
 import { generateArticle } from "../lib/ollama.js";
 import { HugoPublisher } from "../lib/hugo-publisher.js";
-import { TrustApiClient } from "../lib/trust-api.js";
+import { signLocalPayload } from "../lib/local-signing.js";
 import { GroundTruthTracker } from "../lib/ground-truth.js";
 import { composeExec, writeFileToContainer } from "../lib/docker.js";
 import type { ScenarioConfig, AuthorProfile, AIAssistance, ArticleMetadata, PhaseResult } from "../types.js";
@@ -139,7 +139,6 @@ export async function runPhase2(
   const errors: string[] = [];
   const start = Date.now();
   const rng = createRng(config.seed + 3000);
-  const trustClient = new TrustApiClient(config.trust_server.url, config.trust_server.general_api_key, config.trust_server.admin_api_key);
   const [minArt, maxArt] = config.authors.articles_per_author;
 
   for (const author of authors) {
@@ -166,15 +165,9 @@ export async function runPhase2(
 
         const signedAt = v1Timestamp();
         const signedClaims = buildSignedClaims(author.name, signedAt, declaredMeta);
-        const signedClaimRecords = claimRecords(signedClaims);
         const innerContentHtml = `<article><p>${escapeText(content)}</p></article>`;
 
         if (author.cmsType === "wordpress") {
-          // Ask the trust server to sign the binding.
-          // NOTE: per spec §3.1 cryptographic verification SHOULD be local; the
-          // trust server's /content/sign endpoint is a convenience for holding
-          // author private keys on the author's behalf in the "signup" use case.
-          //
           // TODO(wp-plugin-handoff): Once the content-signing plugin's
           // publish-time wrapper hook is verified end-to-end, drop the manual
           // <signed-section> injection below and let the plugin do it. The
@@ -207,30 +200,29 @@ export async function runPhase2(
             throw new Error(`WordPress returned an unexpected final URL for post ${postIdStr}: ${sourceURL}`);
           }
           const contentHash = computeContentHashFromHtml(innerContentHtml, sourceURL);
-          const expectedClaimsHash = computeClaimsHash(signedClaims);
-          const sigResult = await trustClient.signContent(author.authorApiKey, {
+          const claimsHash = computeClaimsHash(signedClaims);
+          const payload = buildV1SigningPayload({
             contentHash,
-            sourceURL,
+            claimsHash,
+            documentURL: sourceURL,
             scope: "url",
+            keyid: author.keyId,
+            algorithm: "ed25519",
             signedAt,
-            claims: signedClaimRecords,
           });
-          if (sigResult.claimsHash !== expectedClaimsHash) {
-            throw new Error(`claims hash mismatch for ${sourceURL}: local=${expectedClaimsHash} directory=${sigResult.claimsHash}`);
-          }
+          const signature = signLocalPayload(author.id, payload);
 
           // Build the signed-section wrapper with the content nested inside.
           // Using the wrapped form (spec §2.1 example): the <signed-section>
           // contains the content, so the browser can extract text from within
           // it unambiguously.
-          const keyId = sigResult.keyid;
           const signedSection = buildSignedSectionHtml({
-            profile: sigResult.profile,
-            scope: sigResult.scope,
-            signature: sigResult.signature,
-            keyId,
+            profile: "htmltrust-signature-v1",
+            scope: "url",
+            signature,
+            keyId: author.keyId,
             contentHash,
-            algorithm: sigResult.algorithm,
+            algorithm: "ed25519",
             author: author.name,
             signedAt,
             claims: declaredMeta,
@@ -257,7 +249,7 @@ export async function runPhase2(
             declaredMetadata: declaredMeta, actualMetadata: actualMeta,
             isMalicious: malCheck.isMalicious,
             maliciousReason: malCheck.reason,
-            contentHash, signature: sigResult.signature,
+            contentHash, signature,
           });
           console.log(`  ${title}${malCheck.isMalicious ? " [MALICIOUS]" : ""} -> ${url}`);
           continue;
@@ -304,35 +296,30 @@ export async function runPhase2(
 
           const signedAt = v1Timestamp();
           const signedClaims = buildSignedClaims(author.name, signedAt, article.declaredMetadata);
-          const signedClaimRecords = claimRecords(signedClaims);
           const innerContentHtml = `<article><p>${escapeText(article.content)}</p></article>`;
           const contentHash = computeContentHashFromHtml(innerContentHtml, article.url);
-          const expectedClaimsHash = computeClaimsHash(signedClaims);
-
-          // Sign the canonical binding via the trust server
-          const sig = await trustClient.signContent(author.authorApiKey, {
+          const claimsHash = computeClaimsHash(signedClaims);
+          const payload = buildV1SigningPayload({
             contentHash,
-            sourceURL: article.url,
+            claimsHash,
+            documentURL: article.url,
             scope: "url",
+            keyid: author.keyId,
+            algorithm: "ed25519",
             signedAt,
-            claims: signedClaimRecords,
           });
-          if (sig.claimsHash !== expectedClaimsHash) {
-            throw new Error(`claims hash mismatch for ${article.url}: local=${expectedClaimsHash} directory=${sig.claimsHash}`);
-          }
-
-          const keyId = sig.keyid;
+          const signature = signLocalPayload(author.id, payload);
 
           // Build a new signed-section that wraps the article text inline.
           // We replace the Hugo-generated standalone signed-section with our
           // wrapped version.
           const newSignedSection = buildSignedSectionHtml({
-            profile: sig.profile,
-            scope: sig.scope,
-            signature: sig.signature,
-            keyId,
+            profile: "htmltrust-signature-v1",
+            scope: "url",
+            signature,
+            keyId: author.keyId,
             contentHash,
-            algorithm: sig.algorithm,
+            algorithm: "ed25519",
             author: author.name,
             signedAt,
             claims: article.declaredMetadata,
@@ -355,7 +342,7 @@ export async function runPhase2(
           }
           await writeFile(htmlPath, newHtml);
 
-          article.signature = sig.signature;
+          article.signature = signature;
           article.contentHash = contentHash;
         }
       } catch (err) {

@@ -1,4 +1,28 @@
-FROM wordpress:6-php8.2-apache
+FROM composer:2.8.11@sha256:68e926a477000f12e8645e82a020b84904d49071c895c4951551fe80eed5d103 AS composer
+
+FROM wordpress:6-php8.5-apache@sha256:d0503978e17bd0724f9b06b1ef6e5f7af80e83c98fa6f3eaea92780927d702cf
+
+COPY --from=composer /usr/bin/composer /usr/local/bin/composer
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes git libicu-dev libonig-dev unzip \
+    && docker-php-ext-install intl mbstring \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build a self-contained plugin from the sibling checkout. The custom
+# entrypoint refreshes this exact directory in the test WordPress volume on
+# every container start, including when a previous run left the volume up.
+COPY htmltrust-cms-reference/wordpress /opt/htmltrust-content-signing
+RUN composer install \
+      --working-dir=/opt/htmltrust-content-signing \
+      --no-dev \
+      --prefer-dist \
+      --no-interaction \
+      --no-progress \
+      --optimize-autoloader
+
+COPY htmltrust-e2e/scripts/wordpress-entrypoint.sh /usr/local/bin/htmltrust-wordpress-entrypoint
+RUN chmod 0755 /usr/local/bin/htmltrust-wordpress-entrypoint
 
 # Install wp-cli from a pinned release, verified against the sha512 published
 # with that release. The previous source (the wp-cli/builds gh-pages branch)
@@ -43,3 +67,6 @@ RUN printf '%s\n' \
       '  remove_filter("the_excerpt", "wpautop");' \
       '}, 99);' \
     > /usr/src/wordpress/wp-content/mu-plugins/disable-content-filters.php
+
+ENTRYPOINT ["/usr/local/bin/htmltrust-wordpress-entrypoint"]
+CMD ["apache2-foreground"]

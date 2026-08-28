@@ -8,24 +8,24 @@ import {
   evaluateTrustPolicy,
   type VerifyResult,
   type TrustEvaluation,
-  type TrustInput,
 } from "@htmltrust/browser-client";
 import { directUrlResolver } from "@htmltrust/canonicalization";
-import type { ConsumerProfile, AuthorProfile, Article, SessionLog, TrustIndicator } from "../types.js";
+import type {
+  ConsumerProfile,
+  AuthorProfile,
+  Article,
+  SessionLog,
+  TrustIndicator,
+  TrustDirectoryConfig,
+  DirectoryQueryResult,
+} from "../types.js";
 
 interface SessionOptions {
   consumer: ConsumerProfile;
   authors: AuthorProfile[];
   articles: Article[];
   screenshotDir: string;
-  /**
-   * Trust directories the consumer is subscribed to. Used both for
-   * key resolution (the resolver chain) and reputation lookups. The
-   * orchestrator may pass either a single URL string or an array; the
-   * session normalizes both forms.
-   */
-  trustDirectoryUrls: string[] | string;
-  generalApiKey: string;
+  directories: TrustDirectoryConfig[];
 }
 
 /** Shape returned by the Node-side __htmltrustVerifyAndScore helper. */
@@ -36,6 +36,7 @@ interface VerifyAndScoreResult {
   authorId: string | null;
   /** Aggregated report count across queried directories. */
   reports: number;
+  directoryResults: DirectoryQueryResult[];
 }
 
 /**
@@ -44,9 +45,11 @@ interface VerifyAndScoreResult {
  * certificate validation. The production extension uses the browser trust
  * store and never calls this helper.
  */
-async function fetchTestKeyDocument(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+async function fetchTestDirectoryResource(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = new URL(input instanceof Request ? input.url : String(input));
-  if (url.hostname !== "trust.htmltrust.test") return fetch(input, init);
+  if (!url.hostname.startsWith("trust-") || !url.hostname.endsWith(".htmltrust.test")) {
+    return fetch(input, init);
+  }
   if (url.protocol !== "https:") throw new Error("test directory key URL must use HTTPS");
 
   return new Promise<Response>((resolve, reject) => {
@@ -54,6 +57,7 @@ async function fetchTestKeyDocument(input: RequestInfo | URL, init?: RequestInit
       method: init?.method || "GET",
       headers: Object.fromEntries(new Headers(init?.headers).entries()),
       rejectUnauthorized: false,
+      ...(init?.signal ? { signal: init.signal } : {}),
     }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -142,55 +146,102 @@ export function mapSourceSnapshot(
   return { complete, sourceByLiveIndex: complete ? sourceByLiveIndex : liveIdentities.map(() => null) };
 }
 
-/**
- * Reputation lookup that mirrors the e2e prototype's two-step shape:
- *   1. GET /api/authors/{authorId}/public-key  -> { id: keyId, ... }
- *   2. GET /api/directory/keys/{keyId}/reputation
- *
- * The browser-client lib's evaluateTrustPolicy expects the reputation URL
- * to be `<directory>/keys/<keyid>/reputation` (the spec shape). The e2e
- * trust server uses a different path that requires the keyid lookup
- * round-trip above, so we layer the reports/score handling on top of the
- * lib's evaluateTrustPolicy output instead of relying on its built-in
- * directory subscription path.
- *
- * TODO(directory-shape): once the trust server is extended (or replaced)
- * with a spec-compliant `/keys/{keyid}/reputation` endpoint, switch this
- * to `directorySubscriptions: directories.map(url => ({ url, weight: 1 }))`
- * and drop this helper.
- */
-async function fetchReputationFromE2eServer(
-  directoryBase: string,
-  authorId: string,
-): Promise<{ trustScore: number; reports: number } | null> {
-  try {
-    const keyRes = await fetch(`${directoryBase}/api/authors/${authorId}/public-key`);
-    if (!keyRes.ok) return null;
-    const key = (await keyRes.json()) as { id?: string };
-    if (!key.id) return null;
-    const repRes = await fetch(`${directoryBase}/api/directory/keys/${key.id}/reputation`);
-    if (!repRes.ok) return null;
-    const rep = (await repRes.json()) as { trustScore?: number; reports?: number };
-    return {
-      trustScore: typeof rep.trustScore === "number" ? rep.trustScore : 0.5,
-      reports: typeof rep.reports === "number" ? rep.reports : 0,
-    };
-  } catch {
-    return null;
-  }
+function authorIdFromKeyid(keyid: string, authors: AuthorProfile[]): string | null {
+  return authors.find((author) => author.keyId === keyid)?.id ?? null;
 }
 
-/** Resolve the legacy author-key URL or the canonical directory-key URL. */
-function authorIdFromKeyid(keyid: string, authors: AuthorProfile[]): string | null {
-  const m = keyid.match(/\/authors\/([^/]+)/);
-  if (m) return m[1];
+export function createDirectoryEvidenceFetch(
+  directories: TrustDirectoryConfig[],
+  transport: typeof fetch = fetchTestDirectoryResource,
+): {
+  fetchImpl: typeof fetch;
+  results: DirectoryQueryResult[];
+} {
+  const results: DirectoryQueryResult[] = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const directory = directories.find((candidate) => [
+      candidate.public_url,
+      candidate.url,
+      candidate.container_url,
+    ].some((candidateUrl) => new URL(candidateUrl).origin === url.origin));
+    if (!directory) return transport(input, init);
 
-  try {
-    const keyRecordId = new URL(keyid).pathname.match(/\/keys\/([^/]+)$/)?.[1];
-    return authors.find((author) => author.keyId === keyRecordId)?.id ?? null;
-  } catch {
-    return null;
+    const started = Date.now();
+    try {
+      const response = await transport(input, init);
+      const result: DirectoryQueryResult = {
+        directoryId: directory.id,
+        url: directory.public_url,
+        weight: directory.weight,
+        status: response.ok ? "ok" : "unavailable",
+        latencyMs: Date.now() - started,
+      };
+      if (response.ok) {
+        try {
+          const body = await response.clone().json() as {
+            score?: unknown;
+            trustScore?: unknown;
+            reports?: unknown;
+          };
+          const score = typeof body.score === "number" ? body.score : body.trustScore;
+          if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) {
+            result.status = "malformed";
+          } else {
+            result.score = score;
+            if (typeof body.reports === "number" && Number.isFinite(body.reports) && body.reports >= 0) {
+              result.reports = body.reports;
+            }
+          }
+        } catch {
+          result.status = "malformed";
+        }
+      }
+      results.push(result);
+      return response;
+    } catch (error) {
+      results.push({
+        directoryId: directory.id,
+        url: directory.public_url,
+        weight: directory.weight,
+        status: "unavailable",
+        latencyMs: Date.now() - started,
+      });
+      throw error;
+    }
+  };
+  return { fetchImpl, results };
+}
+
+export async function evaluateFederatedTrust(
+  verify: VerifyResult,
+  consumer: Pick<ConsumerProfile, "personalTrustList" | "directorySubscriptions">,
+  directories: TrustDirectoryConfig[],
+  transport: typeof fetch = fetchTestDirectoryResource,
+): Promise<{ trust: TrustEvaluation; directoryResults: DirectoryQueryResult[]; reports: number }> {
+  const evidence = createDirectoryEvidenceFetch(directories, transport);
+  const trust = await evaluateTrustPolicy(verify, {
+    personalTrustList: consumer.personalTrustList,
+    trustedDomains: [],
+    directorySubscriptions: consumer.directorySubscriptions.map((subscription) => ({
+      url: subscription.url,
+      weight: subscription.weight,
+    })),
+    fetch: evidence.fetchImpl,
+  });
+  for (const result of evidence.results) {
+    const input = trust.inputs.find((candidate) => candidate.source === `directory:${result.url}`);
+    if (input) result.contribution = input.contribution;
   }
+  const directoryResults = [...evidence.results].sort((left, right) =>
+    directories.findIndex((directory) => directory.id === left.directoryId) -
+    directories.findIndex((directory) => directory.id === right.directoryId)
+  );
+  return {
+    trust,
+    directoryResults,
+    reports: directoryResults.reduce((sum, result) => sum + (result.reports ?? 0), 0),
+  };
 }
 
 /**
@@ -368,6 +419,7 @@ export const DOM_SCRIPT_BODY = `
       trustScore: score.trust.score,
       indicator: indicator,
       reports: score.reports,
+      directoryResults: score.directoryResults,
       verificationInputState: score.verify.inputState,
       verificationReason: score.verify.reason,
     });
@@ -391,17 +443,11 @@ export const DOM_SCRIPT_BODY = `
 `;
 
 export async function runConsumerSession(opts: SessionOptions): Promise<SessionLog> {
-  const { consumer, authors, articles, screenshotDir } = opts;
-  const directoryUrls = Array.isArray(opts.trustDirectoryUrls)
-    ? opts.trustDirectoryUrls
-    : [opts.trustDirectoryUrls];
-  // The first directory in the list is the "primary" used for vote POSTs in
-  // the simulation. Multi-directory voting is out of scope for now.
-  const primaryDirectoryUrl = directoryUrls[0];
+  const { consumer, authors, articles, screenshotDir, directories } = opts;
 
   const log: SessionLog = {
     consumerId: consumer.id,
-    trustedAuthors: consumer.trustedAuthors,
+    personalTrustList: consumer.personalTrustList,
     pagesVisited: [],
     votesCast: [],
     screenshots: [],
@@ -418,7 +464,7 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
   // Build the resolver once per session. The signed keyid remains an HTTPS
   // URL and is fetched through Nginx. Only the generated test certificate is
   // accepted by the Node-side verification helper.
-  const keyResolvers = [directUrlResolver({ fetch: fetchTestKeyDocument })];
+  const keyResolvers = [directUrlResolver({ fetch: fetchTestDirectoryResource })];
 
   await context.exposeFunction(
     "__htmltrustVerifyAndScore",
@@ -435,70 +481,14 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
       });
 
       const authorId = verify.keyid ? authorIdFromKeyid(verify.keyid, authors) : null;
-
-      // Layer 2 baseline from the lib. We pass an EMPTY directory list
-      // because the lib's reputation URL shape (`<base>/keys/<keyid>/reputation`)
-      // doesn't match the e2e trust server's two-step lookup. Reports are
-      // applied as an override below — see fetchReputationFromE2eServer.
-      const trust = await evaluateTrustPolicy(verify, {
-        personalTrustList: [], // keyids; e2e maps trust by authorId, layered below
-        trustedDomains: [],
-        directorySubscriptions: [],
-      });
-
-      // Layer the e2e prototype's personal-trust-list (by authorId) on top
-      // of evaluateTrustPolicy's score. The lib only knows about keyid
-      // matches; the simulation tracks consumer.trustedAuthors as authorIds.
-      const extraInputs: TrustInput[] = [];
-      let score = trust.score;
-      if (verify.valid && authorId && consumer.trustedAuthors.includes(authorId)) {
-        score = Math.min(100, score + 40);
-        extraInputs.push({
-          source: "personal-trust-list",
-          contribution: 40,
-          rationale: "author in personal trust list (option A)",
-        });
-      }
-
-      // Reputation from the e2e trust server, aggregated across directories.
-      // Any reports trigger the spec's "researcher-flag → red" override.
-      let totalReports = 0;
-      if (verify.valid && authorId) {
-        for (const dir of directoryUrls) {
-          const rep = await fetchReputationFromE2eServer(dir, authorId);
-          if (!rep) continue;
-          totalReports += rep.reports;
-          if (rep.reports > 0) {
-            // Mirror the previous penalty curve: 35 for the first report,
-            // +15 per additional, capped at 60. Keeps phase-3 vs phase-4
-            // expectations stable.
-            const penalty = Math.min(60, 35 + (rep.reports - 1) * 15);
-            score = Math.max(0, score - penalty);
-            extraInputs.push({
-              source: "directory-reports",
-              contribution: -penalty,
-              rationale: `${rep.reports} report(s) filed against author at ${dir}`,
-            });
-          }
-        }
-      }
-
-      // Recompute the indicator from the layered score; reports force red.
-      let indicator: TrustEvaluation["indicator"] = trust.indicator;
-      if (verify.valid) {
-        indicator = score < 20 ? "red" : score >= 70 ? "green" : "yellow";
-      }
-      if (totalReports > 0) indicator = "red";
+      const policy = await evaluateFederatedTrust(verify, consumer, directories);
 
       return {
         verify,
-        trust: {
-          score,
-          indicator,
-          inputs: [...trust.inputs, ...extraInputs],
-        },
+        trust: policy.trust,
         authorId,
-        reports: totalReports,
+        reports: policy.reports,
+        directoryResults: policy.directoryResults,
       };
     },
   );
@@ -552,6 +542,7 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
           trustScore: number;
           indicator: string;
           reports: number;
+          directoryResults: DirectoryQueryResult[];
           verificationInputState: "source-only" | "stale" | "rendered-match";
           verificationReason?: string;
         }>;
@@ -577,11 +568,13 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
           trustIndicator: indicator,
           verificationInputState: result?.verificationInputState ?? "source-only",
           verificationReason: result?.verificationReason,
+          trustScore: result?.trustScore ?? 0,
+          directoryResults: result?.directoryResults ?? [],
         });
 
         // Cast vote by clicking button (and also POST to API for reliability)
         if (consumer.willVote) {
-          const isTrusted = consumer.trustedAuthors.includes(author.id);
+          const isTrusted = consumer.personalTrustList.includes(author.keyId);
           const voteType = isTrusted ? "TRUST" : "DISTRUST";
           const selector = isTrusted ? ".cs-upvote-button" : ".cs-downvote-button";
           try {
@@ -589,21 +582,39 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
           } catch {
             // Button might not be there if verification failed, that's ok
           }
-          // Also post via API to guarantee the vote is recorded
-          try {
-            await fetch(`${primaryDirectoryUrl}/api/votes`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "X-API-KEY": opts.generalApiKey },
-              body: JSON.stringify({
+          // Send the same user action to every subscribed directory. Local
+          // authors use the compatibility author-vote route. Foreign signers
+          // use the canonical exact-keyid opinion record.
+          for (const directory of directories) {
+            const identity = author.directoryIdentities[directory.id];
+            if (!identity) continue;
+            try {
+              const localBody = {
                 userId: consumer.id,
                 targetType: "AUTHOR",
-                targetId: author.id,
+                targetId: identity.authorId,
                 voteType,
-              }),
-            });
-            log.votesCast.push({ authorId: author.id, vote: voteType, timestamp: Date.now() });
-          } catch {
-            // ignore
+              };
+              const foreignBody = {
+                signerId: author.keyId,
+                voteType,
+                reason: `E2E action from ${consumer.id}`,
+              };
+              const response = await fetch(`${directory.url}${identity.authorId ? "/api/votes" : "/api/directory/signer-votes"}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-API-KEY": directory.general_api_key },
+                body: JSON.stringify(identity.authorId ? localBody : foreignBody),
+              });
+              if (!response.ok) continue;
+              log.votesCast.push({
+                authorId: author.id,
+                directoryId: directory.id,
+                vote: voteType,
+                timestamp: Date.now(),
+              });
+            } catch {
+              // A directory write failure does not change local verification.
+            }
           }
         }
 
@@ -626,6 +637,8 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
           trustIndicator: "verified-unknown",
           verificationInputState: "source-only",
           verificationReason: err instanceof Error ? err.message : String(err),
+          trustScore: 0,
+          directoryResults: [],
         });
       }
     }

@@ -5,6 +5,28 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scenario="${1:-scenario-small.yaml}"
 cd "$repo_dir"
 
+for command_name in git node npm docker hugo; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "Missing required command: $command_name" >&2
+    exit 2
+  fi
+done
+
+if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'; then
+  echo "Node.js 22 or newer is required; found $(node --version)" >&2
+  exit 2
+fi
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Docker Compose v2 is required; 'docker compose' is unavailable" >&2
+  exit 2
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "The Docker daemon is unavailable for the current user" >&2
+  exit 2
+fi
+
 case "$scenario" in
   /*|*..*)
     echo "Scenario must be a path inside htmltrust-e2e" >&2
@@ -21,11 +43,11 @@ required_siblings=(
 )
 
 declare -A expected_revisions=(
-  [htmltrust-canonicalization]=5e51040dcaaf50935e245702bdefbc18a1d542ce
-  [htmltrust-browser-client]=f21504e170c6b29e91eda3bb491bf4580e5f5a86
-  [htmltrust-browser-reference]=407bace3ad792384ba623b5db795f3f32acd16ca
-  [htmltrust-cms-reference]=69aafdfad2c81766f2717b88525f2569370f96cd
-  [htmltrust-server-reference]=56ab5c06e901f8f48753e3a511dd9dda755b9bac
+  [htmltrust-canonicalization]=760593d4a02e9fffa56dc4d002eb52ab2ade1b49
+  [htmltrust-browser-client]=70c5ddb6ed23c06c0b1c46d5284618fb99a28aac
+  [htmltrust-browser-reference]=b9ec8a2af7d495ece58b5027b4f4cb97c7e5f3ff
+  [htmltrust-cms-reference]=cf050a9679610cf58103e641aab14a739c7d4503
+  [htmltrust-server-reference]=07a286dfd0a219e75286e983315d5a886e9e1a2d
 )
 
 for repository in "${required_siblings[@]}"; do
@@ -54,9 +76,11 @@ if [[ ! -f "$repo_dir/$scenario" ]]; then
   exit 2
 fi
 
+export HTMLTRUST_HOST_UID="${HTMLTRUST_HOST_UID:-$(id -u)}"
+export HTMLTRUST_HOST_GID="${HTMLTRUST_HOST_GID:-$(id -g)}"
+
 echo "Building the pinned browser packages"
-npm --prefix "$repo_dir/../htmltrust-canonicalization/javascript" install \
-  --package-lock=false --ignore-scripts --no-audit --no-fund
+npm --prefix "$repo_dir/../htmltrust-canonicalization" ci --ignore-scripts --no-audit --no-fund
 npm --prefix "$repo_dir/../htmltrust-browser-client" ci
 npm --prefix "$repo_dir/../htmltrust-browser-client" run build
 npm --prefix "$repo_dir/../htmltrust-browser-reference" ci --ignore-scripts=false
@@ -73,6 +97,10 @@ docker compose --project-directory "$repo_dir" up -d --build --wait
 
 echo "Publishing signed content"
 node --import tsx "$repo_dir/src/smoke-test.ts" "$repo_dir/$scenario"
+
+echo "Checking WordPress browser-local signing"
+docker compose --project-directory "$repo_dir" run --rm --entrypoint npx playwright \
+  tsx scripts/wordpress-local-signing-test.ts
 
 echo "Running browser, reporting, and validation phases"
 docker compose --project-directory "$repo_dir" run --rm --entrypoint npx playwright \

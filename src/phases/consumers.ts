@@ -1,11 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runConsumerSession } from "../lib/playwright-session.js";
-import type { ScenarioConfig, AuthorProfile, Article, ConsumerProfile, SessionLog, PhaseResult } from "../types.js";
+import type { ScenarioConfig, AuthorProfile, Article, ConsumerProfile, SessionLog, PhaseResult, TrustDirectoryConfig } from "../types.js";
 
 export async function runPhase3(
   config: ScenarioConfig, authors: AuthorProfile[], articles: Article[],
-  consumers: ConsumerProfile[], trustDirectoryUrls: string[], e2eDir: string
+  consumers: ConsumerProfile[], directories: TrustDirectoryConfig[], e2eDir: string
 ): Promise<{ result: PhaseResult; sessionLogs: SessionLog[] }> {
   const errors: string[] = [];
   const start = Date.now();
@@ -20,7 +20,7 @@ export async function runPhase3(
     const batch = consumers.slice(b * bs, (b + 1) * bs);
     console.log(`[Phase 3] Batch ${b + 1}/${total} (${batch.length} consumers)...`);
     const results = await Promise.allSettled(batch.map((c) =>
-      runConsumerSession({ consumer: c, authors, articles, trustDirectoryUrls, screenshotDir: ssDir, generalApiKey: config.trust_server.general_api_key })
+      runConsumerSession({ consumer: c, authors, articles, directories, screenshotDir: ssDir })
     ));
     for (const r of results) {
       if (r.status === "fulfilled") sessionLogs.push(r.value);
@@ -34,7 +34,13 @@ export async function runPhase3(
   for (const log of sessionLogs) {
     for (const v of log.pagesVisited) {
       if (!v.signatureValid) sigFails++;
-      const expected = log.trustedAuthors.includes(v.authorId) ? "trusted" : "verified-unknown";
+      const author = authors.find((candidate) => candidate.id === v.authorId);
+      const hasReport = v.directoryResults.some((result) => (result.reports ?? 0) > 0);
+      const expected = hasReport
+        ? "warning"
+        : author && log.personalTrustList.includes(author.keyId)
+          ? "trusted"
+          : "verified-unknown";
       if (v.trustIndicator !== expected) indMismatch++;
     }
   }
