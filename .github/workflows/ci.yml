@@ -58,6 +58,10 @@ jobs:
           npm run test:analysis
           npm run build
 
+      - name: Browser lifecycle engines
+        working-directory: htmltrust-e2e
+        run: npm run test:browser:engines
+
       - name: Audit dependencies
         working-directory: htmltrust-e2e
         run: npm audit --audit-level=low
