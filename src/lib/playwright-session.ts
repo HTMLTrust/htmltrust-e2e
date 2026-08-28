@@ -81,6 +81,89 @@ function mapIndicator(indicator: TrustEvaluation["indicator"]): TrustIndicator {
   return "verified-unknown";
 }
 
+export interface SourceSnapshotCapture {
+  html: string;
+  url: string;
+  sections: string[];
+}
+
+/**
+ * Capture a response body for one navigation. A failed read deliberately
+ * returns an empty snapshot; the page walker treats that as unverifiable.
+ * Keeping this helper outside the browser makes the reload/reset contract
+ * directly testable without requiring a local Chromium download.
+ */
+export async function captureSourceSnapshot(
+  response: { text(): Promise<string>; url(): string } | null,
+  requestedUrl: string,
+): Promise<SourceSnapshotCapture> {
+  if (!response) return { html: "", url: requestedUrl, sections: [] };
+  try {
+    const html = await response.text();
+    return {
+      html,
+      url: response.url() || requestedUrl,
+      sections: extractSignedSections(html),
+    };
+  } catch {
+    return { html: "", url: requestedUrl, sections: [] };
+  }
+}
+
+export interface SourceSnapshotMapping {
+  complete: boolean;
+  sourceByLiveIndex: Array<string | null>;
+}
+
+/**
+ * Match frozen response slices to live sections by their signature-bearing
+ * identity. Every section must map exactly once. No caller may substitute the
+ * live outerHTML when this check fails.
+ */
+export function mapSourceSnapshot(
+  sourceHtml: string,
+  sourceSections: readonly string[],
+  sourceIdentities: readonly string[],
+  liveIdentities: readonly string[],
+): SourceSnapshotMapping {
+  const empty = () => ({ complete: false, sourceByLiveIndex: liveIdentities.map(() => null) });
+  if (!sourceHtml || sourceSections.length === 0 || sourceSections.length !== sourceIdentities.length) return empty();
+  if (sourceSections.some((section) => !section) || sourceIdentities.length !== liveIdentities.length) return empty();
+
+  const queues = new Map<string, string[]>();
+  sourceIdentities.forEach((identity, index) => {
+    const queue = queues.get(identity) ?? [];
+    queue.push(sourceSections[index]);
+    queues.set(identity, queue);
+  });
+  const sourceByLiveIndex = liveIdentities.map((identity) => queues.get(identity)?.shift() ?? null);
+  const complete = sourceByLiveIndex.every((section) => section !== null) &&
+    [...queues.values()].every((queue) => queue.length === 0);
+  return { complete, sourceByLiveIndex: complete ? sourceByLiveIndex : liveIdentities.map(() => null) };
+}
+
+export function outermostSectionIndex(parentIndexes: readonly number[], index: number): number {
+  let anchor = index;
+  while (parentIndexes[anchor] !== undefined && parentIndexes[anchor] >= 0) anchor = parentIndexes[anchor];
+  return anchor;
+}
+
+export function displayVerificationState(
+  cryptoValid: boolean,
+  inputState: "source-only" | "stale" | "rendered-match",
+): { valid: boolean; className: "verified" | "warning" | "unverified"; text: string } {
+  if (cryptoValid && inputState === "rendered-match") {
+    return { valid: true, className: "verified", text: "✓ Signature valid" };
+  }
+  if (cryptoValid && inputState === "source-only") {
+    return { valid: false, className: "warning", text: "⚠ Source signature valid; rendered content not verified" };
+  }
+  if (cryptoValid && inputState === "stale") {
+    return { valid: false, className: "warning", text: "⚠ Rendered content INVALID (source differs)" };
+  }
+  return { valid: false, className: "unverified", text: "✗ Signature INVALID" };
+}
+
 /**
  * Reputation lookup that mirrors the e2e prototype's two-step shape:
  *   1. GET /api/authors/{authorId}/public-key  -> { id: keyId, ... }
@@ -142,7 +225,7 @@ function authorIdFromKeyid(keyid: string, authors: AuthorProfile[]): string | nu
  * Why Node-side: key resolution uses Docker-only directory URLs, and the
  * library resolver chain is deliberately exercised outside page CORS.
  */
-const DOM_SCRIPT_BODY = `
+export const DOM_SCRIPT_BODY = `
   const results = [];
   const snapshot = window.__htmltrustSourceSnapshot || { html: "", url: window.location.href, sections: [] };
   const sourceDocument = new DOMParser().parseFromString(snapshot.html || "", "text/html");
@@ -153,7 +236,7 @@ const DOM_SCRIPT_BODY = `
   sourceNodes.forEach((section, index) => {
     const key = identity(section);
     const queue = sourceByIdentity.get(key) || [];
-    queue.push(snapshot.sections[index] || "");
+    queue.push(Array.isArray(snapshot.sections) ? snapshot.sections[index] || "" : "");
     sourceByIdentity.set(key, queue);
   });
   const sourceBaseElement = sourceDocument.querySelector("base[href]");
@@ -165,12 +248,27 @@ const DOM_SCRIPT_BODY = `
       sourceBaseUrl = snapshot.url;
     }
   }
-  const sections = document.querySelectorAll("signed-section");
+  const sections = Array.from(document.querySelectorAll("signed-section"));
+  const markerBySection = new WeakMap();
+  const liveIdentityCounts = new Map();
+  sections.forEach((section) => {
+    const key = identity(section);
+    liveIdentityCounts.set(key, (liveIdentityCounts.get(key) || 0) + 1);
+  });
+  const sourceMappingComplete = Boolean(snapshot.html) &&
+    sourceNodes.length === sections.length &&
+    Array.isArray(snapshot.sections) &&
+    snapshot.sections.length === sourceNodes.length &&
+    snapshot.sections.every((sourceHtml) => typeof sourceHtml === "string" && sourceHtml.length > 0) &&
+    sourceNodes.every((section) => (sourceByIdentity.get(identity(section)) || []).length > 0) &&
+    [...sourceByIdentity.entries()].every(([key, queue]) => queue.length === (liveIdentityCounts.get(key) || 0));
   for (const section of sections) {
     const origin = new URL(snapshot.url).origin;
     const renderedHtml = section.outerHTML;
-    const sourceHtml = (sourceByIdentity.get(identity(section)) || []).shift() || "";
-    const html = sourceHtml || renderedHtml;
+    const sourceHtml = sourceMappingComplete ? (sourceByIdentity.get(identity(section)) || []).shift() || "" : "";
+    // An unavailable or incomplete response snapshot is an unverifiable
+    // section. Never replace the signed source with repaired live DOM bytes.
+    const html = sourceHtml;
 
     // Best-effort author display name from inner <meta name="author">,
     // preserved purely for badge data attributes.
@@ -195,9 +293,10 @@ const DOM_SCRIPT_BODY = `
     const indicator = score.trust.indicator === "green" ? "trusted"
       : score.trust.indicator === "red" ? "warning"
       : "verified-unknown";
-    const normalizedIndicator = indicator
-      .replace("verified-unknown", "unknown")
-      .replace("warning", "untrusted");
+    const renderedMatch = score.verify.valid === true && score.verify.inputState === "rendered-match";
+    const normalizedIndicator = renderedMatch
+      ? indicator.replace("verified-unknown", "unknown").replace("warning", "untrusted")
+      : "unknown";
 
     const cryptoValid = score.verify.valid === true;
     const contentHashValid = cryptoValid || (score.verify.reason !== "content-hash-mismatch");
@@ -210,10 +309,16 @@ const DOM_SCRIPT_BODY = `
     badges.style.cssText = "display: flex; gap: 8px; padding: 8px; margin: 8px 0; font-family: sans-serif; font-size: 14px; align-items: center; flex-wrap: wrap;";
 
     const sigBadge = document.createElement("span");
-    if (cryptoValid) {
+    if (renderedMatch) {
       sigBadge.className = "cs-verification-badge cs-verification-badge-verified cs-validity-badge";
       sigBadge.textContent = "✓ Signature valid";
       sigBadge.style.cssText = "background: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px;";
+    } else if (cryptoValid) {
+      sigBadge.className = "cs-verification-badge cs-verification-badge-warning cs-validity-badge";
+      sigBadge.textContent = score.verify.inputState === "stale"
+        ? "⚠ Rendered content INVALID (source differs)"
+        : "⚠ Source signature valid; rendered content not verified";
+      sigBadge.style.cssText = "background: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px;";
     } else {
       sigBadge.className = "cs-verification-badge cs-verification-badge-unverified cs-validity-badge";
       sigBadge.textContent = "✗ Signature INVALID";
@@ -224,9 +329,9 @@ const DOM_SCRIPT_BODY = `
     const trustBadge = document.createElement("span");
     trustBadge.className = "cs-trust-badge cs-trust-badge-" + normalizedIndicator;
     trustBadge.textContent = "Trust: " + score.trust.score + "%";
-    if (score.trust.score >= 70) {
+    if (normalizedIndicator === "trusted") {
       trustBadge.style.cssText = "background: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px;";
-    } else if (score.trust.score < 20) {
+    } else if (normalizedIndicator === "untrusted") {
       trustBadge.style.cssText = "background: #f8d7da; color: #721c24; padding: 4px 8px; border-radius: 4px;";
     } else {
       trustBadge.style.cssText = "background: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px;";
@@ -252,7 +357,15 @@ const DOM_SCRIPT_BODY = `
     downvote.style.cssText = "cursor: pointer; padding: 4px 8px; border: 1px solid #ccc; background: white; border-radius: 4px;";
     badges.appendChild(downvote);
 
-    section.parentNode.insertBefore(badges, section.nextSibling);
+    badges.setAttribute("data-verification-state", score.verify.inputState || "source-only");
+    const previousBadge = markerBySection.get(section);
+    if (previousBadge) previousBadge.remove();
+    // Always anchor after the outermost signed section, including nested
+    // sections, so extension-owned nodes stay outside signed bytes.
+    let anchor = section;
+    while (anchor.parentElement && anchor.parentElement.matches("signed-section")) anchor = anchor.parentElement;
+    anchor.parentNode && anchor.parentNode.insertBefore(badges, anchor.nextSibling);
+    markerBySection.set(section, badges);
 
     results.push({
       authorId: score.authorId,
@@ -264,6 +377,21 @@ const DOM_SCRIPT_BODY = `
       verificationInputState: score.verify.inputState,
       verificationReason: score.verify.reason,
     });
+    const result = results[results.length - 1];
+    const observer = new MutationObserver(() => {
+      const badge = markerBySection.get(section);
+      if (!badge) return;
+      badge.setAttribute("data-verification-state", "stale");
+      const sig = badge.querySelector(".cs-validity-badge");
+      if (sig) {
+        sig.className = "cs-verification-badge cs-verification-badge-warning cs-validity-badge";
+        sig.textContent = "⚠ Rendered content INVALID (source differs)";
+        sig.style.cssText = "background: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px;";
+      }
+      result.verificationInputState = "stale";
+      result.verificationReason = "live content changed";
+    });
+    observer.observe(section, { attributes: true, characterData: true, childList: true, subtree: true });
   }
   return results;
 `;
@@ -393,28 +521,40 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
       const article = authorArticles[Math.floor(Math.random() * authorArticles.length)];
       try {
         const response = await page.goto(article.url, { waitUntil: "networkidle", timeout: 15_000 });
-        let sourceHtml = "";
-        let sourceUrl = article.url;
-        let sourceSections: string[] = [];
-        try {
-          if (response) {
-            sourceHtml = await response.text();
-            sourceUrl = response.url();
-            sourceSections = extractSignedSections(sourceHtml);
-          }
-        } catch {
-          sourceHtml = "";
-          sourceSections = [];
-        }
+        // This snapshot is recreated for every navigation. A failed response
+        // read therefore cannot leave the previous page's signed bytes live.
+        const sourceSnapshot = await captureSourceSnapshot(response, article.url);
+
+        // Preflight the same source/live identity contract in Node. The page
+        // walker repeats this check in its own DOM context as a defense in
+        // depth, but this keeps the session path itself fail-closed too.
+        const identities = await page.evaluate((html) => {
+          const names = ["profile", "signature-scope", "signature", "keyid", "algorithm", "content-hash"];
+          const identity = (section: Element) => names.map((name) => name + "=" + (section.getAttribute(name) || "")).join("\u001f");
+          const sourceDocument = new DOMParser().parseFromString(html || "", "text/html");
+          return {
+            source: Array.from(sourceDocument.querySelectorAll("signed-section")).map(identity),
+            live: Array.from(document.querySelectorAll("signed-section")).map(identity),
+          };
+        }, sourceSnapshot.html);
+        const mapping = mapSourceSnapshot(
+          sourceSnapshot.html,
+          sourceSnapshot.sections,
+          identities.source,
+          identities.live,
+        );
+        const snapshotForPage = mapping.complete
+          ? sourceSnapshot
+          : { ...sourceSnapshot, sections: [] };
 
         // Run the DOM walker. It calls __htmltrustVerifyAndScore per
-        // signed-section, preferring the original source snapshot and
-        // comparing it to the rendered DOM when both are available.
+        // signed-section, using only a complete original source snapshot and
+        // comparing it to the rendered DOM. Missing source fails closed.
         await page.evaluate((snapshot) => {
           (window as unknown as {
             __htmltrustSourceSnapshot?: { html: string; url: string; sections: string[] };
           }).__htmltrustSourceSnapshot = snapshot;
-        }, { html: sourceHtml, url: sourceUrl, sections: sourceSections });
+        }, snapshotForPage);
         const asyncExpression = `(async () => { ${DOM_SCRIPT_BODY} })()`;
         const results = (await page.evaluate(asyncExpression)) as Array<{
           authorId: string | null;
