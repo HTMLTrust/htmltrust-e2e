@@ -15,6 +15,9 @@ This harness publishes v1 signed content through WordPress and Hugo, serves it o
 - Run `npm test -- tests/lib/playwright-session.test.ts && npm run build` for
   the browser lifecycle evidence checks (source mapping, nested markers,
   mutation invalidation, and reload snapshot recovery).
+- Run `npm run test:browser` for the same lifecycle checks in the production
+  DOM walker. This uses the checked-in Playwright Docker image and does not
+  start the integration stack; `npm test` remains browser-download-free.
 - Run `npm run e2e:small` for the complete three-author simulation.
 - Use the split commands below when you need to inspect the stack between publication and browser verification.
 

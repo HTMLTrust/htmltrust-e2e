@@ -142,28 +142,6 @@ export function mapSourceSnapshot(
   return { complete, sourceByLiveIndex: complete ? sourceByLiveIndex : liveIdentities.map(() => null) };
 }
 
-export function outermostSectionIndex(parentIndexes: readonly number[], index: number): number {
-  let anchor = index;
-  while (parentIndexes[anchor] !== undefined && parentIndexes[anchor] >= 0) anchor = parentIndexes[anchor];
-  return anchor;
-}
-
-export function displayVerificationState(
-  cryptoValid: boolean,
-  inputState: "source-only" | "stale" | "rendered-match",
-): { valid: boolean; className: "verified" | "warning" | "unverified"; text: string } {
-  if (cryptoValid && inputState === "rendered-match") {
-    return { valid: true, className: "verified", text: "✓ Signature valid" };
-  }
-  if (cryptoValid && inputState === "source-only") {
-    return { valid: false, className: "warning", text: "⚠ Source signature valid; rendered content not verified" };
-  }
-  if (cryptoValid && inputState === "stale") {
-    return { valid: false, className: "warning", text: "⚠ Rendered content INVALID (source differs)" };
-  }
-  return { valid: false, className: "unverified", text: "✗ Signature INVALID" };
-}
-
 /**
  * Reputation lookup that mirrors the e2e prototype's two-step shape:
  *   1. GET /api/authors/{authorId}/public-key  -> { id: keyId, ... }
