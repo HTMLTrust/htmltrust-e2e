@@ -41,7 +41,7 @@ export class WordPressClient {
    * @param siteUrl - The logical site URL (e.g. http://author1.htmltrust.test)
    * @param username - WP admin username
    * @param password - WP admin password
-   * @param proxyUrl - Optional proxy URL to route requests through (e.g. http://localhost:8080).
+   * @param proxyUrl - Optional proxy URL to route requests through (e.g. http://localhost:18080).
    *                   When set, requests go to the proxy with a Host header matching the site domain.
    */
   constructor(siteUrl: string, username: string, password: string, proxyUrl?: string) {

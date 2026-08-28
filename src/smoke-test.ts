@@ -5,6 +5,7 @@
  */
 import path from "node:path";
 import * as http from "node:http";
+import * as https from "node:https";
 import { fileURLToPath } from "node:url";
 import { loadScenario, generateAuthorProfiles } from "./lib/scenario.js";
 import { TrustApiClient } from "./lib/trust-api.js";
@@ -14,6 +15,7 @@ import { generateNginxConfig } from "./lib/nginx-config.js";
 import { runPhase2 } from "./phases/publish.js";
 
 async function rawHttpGet(
+  proxyProtocol: "http:" | "https:",
   proxyHost: string,
   proxyPort: number,
   siteHost: string,
@@ -21,8 +23,16 @@ async function rawHttpGet(
   maxRedirects = 5
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = http.request(
-      { hostname: proxyHost, port: proxyPort, path: reqPath, method: "GET", headers: { Host: siteHost } },
+    const transport = proxyProtocol === "https:" ? https : http;
+    const req = transport.request(
+      {
+        hostname: proxyHost,
+        port: proxyPort,
+        path: reqPath,
+        method: "GET",
+        headers: { Host: siteHost },
+        ...(proxyProtocol === "https:" ? { rejectUnauthorized: false } : {}),
+      },
       async (res) => {
         // Follow redirects with Host header preserved
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && maxRedirects > 0) {
@@ -32,7 +42,7 @@ async function rawHttpGet(
             const nextPath = loc.startsWith("http")
               ? new URL(loc).pathname + new URL(loc).search
               : loc;
-            const result = await rawHttpGet(proxyHost, proxyPort, siteHost, nextPath, maxRedirects - 1);
+            const result = await rawHttpGet(proxyProtocol, proxyHost, proxyPort, siteHost, nextPath, maxRedirects - 1);
             resolve(result);
           } catch (err) {
             reject(err);
@@ -66,7 +76,7 @@ async function main(): Promise<void> {
   // fails, fall back to restarting the container, which is slower but
   // always works.
   console.log("=== Regenerating nginx.conf ===");
-  await generateNginxConfig(authors, path.join(E2E_DIR, "nginx.conf"));
+  await generateNginxConfig(authors, path.join(E2E_DIR, ".runtime", "nginx.conf"));
 
   let reloaded = false;
   for (let attempt = 0; attempt < 5 && !reloaded; attempt++) {
@@ -113,7 +123,7 @@ async function main(): Promise<void> {
       keyType: "HUMAN",
       keyAlgorithm: "ED25519",
       description: `${author.cmsType} author`,
-      url: `http://${author.domain}`,
+      url: `https://${author.domain}`,
     });
     author.id = result.author.id;
     author.authorApiKey = result.authorApiKey;
@@ -133,12 +143,13 @@ async function main(): Promise<void> {
       await new Promise((r) => setTimeout(r, 3000));
       await composeExec(E2E_DIR, c, [
         "wp", "core", "install",
-        `--url=http://${wpAuthors[i].domain}`,
+        `--url=https://${wpAuthors[i].domain}`,
         `--title=${wpAuthors[i].name} Blog`,
         "--admin_user=admin", "--admin_password=admin",
         `--admin_email=admin@test.test`,
         "--skip-email", "--allow-root",
       ]);
+      await composeExec(E2E_DIR, c, ["wp", "option", "update", "permalink_structure", "", "--allow-root"]);
       const appPw = (await composeExec(E2E_DIR, c, [
         "wp", "user", "application-password", "create", "admin", "e2e-sim", "--porcelain", "--allow-root",
       ])).trim();
@@ -175,16 +186,19 @@ async function main(): Promise<void> {
 
   // Verify articles are accessible and contain signed-section
   console.log(`\n=== Verification ===`);
-  const proxyUrl = new URL(config.nginx_proxy_url || "http://localhost:8080");
+  const proxyUrl = new URL(config.nginx_proxy_url || "https://localhost:18443");
+  if (proxyUrl.protocol !== "http:" && proxyUrl.protocol !== "https:") {
+    throw new Error(`Unsupported nginx proxy protocol: ${proxyUrl.protocol}`);
+  }
   const proxyHost = proxyUrl.hostname;
-  const proxyPort = parseInt(proxyUrl.port, 10) || 80;
+  const proxyPort = parseInt(proxyUrl.port, 10) || (proxyUrl.protocol === "https:" ? 443 : 80);
 
   let passing = 0;
   let totalFetched = 0;
   for (const article of manifest.articles) {
     try {
       const parsed = new URL(article.url);
-      const res = await rawHttpGet(proxyHost, proxyPort, parsed.host, parsed.pathname + parsed.search);
+      const res = await rawHttpGet(proxyUrl.protocol, proxyHost, proxyPort, parsed.host, parsed.pathname + parsed.search);
       totalFetched++;
       const hasSignedSection = res.body.includes("signed-section");
       const marker = hasSignedSection ? "[signed]" : "[UNSIGNED]";
@@ -196,7 +210,11 @@ async function main(): Promise<void> {
   }
   console.log(`\n  ${passing}/${totalFetched} articles verified (200 + signed-section present)`);
 
-  console.log("\nSmoke test complete.\n");
+  if (!p2result.success || totalFetched !== manifest.articles.length || passing !== manifest.articles.length) {
+    throw new Error("Smoke test failed: publication or rendered signed-section checks did not pass");
+  }
+
+  console.log("\nSmoke test passed.\n");
 }
 
 main().catch((err) => {

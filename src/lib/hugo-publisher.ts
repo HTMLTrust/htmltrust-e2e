@@ -14,7 +14,7 @@ export class HugoPublisher {
     await mkdir(path.join(this.siteDir, "layouts/_default"), { recursive: true });
 
     await writeFile(path.join(this.siteDir, "hugo.toml"),
-      `baseURL = "http://${this.domain}/"\ntitle = "${this.authorName} Blog"\ntheme = []\n\n[params]\n  author = "${this.authorName}"\n`);
+      `baseURL = "https://${this.domain}/"\ntitle = "${this.authorName} Blog"\ntheme = []\n\n[params]\n  author = "${this.authorName}"\n`);
 
     await writeFile(path.join(this.siteDir, "layouts/_default/single.html"),
       `<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title>{{ .Title }}</title></head>\n<body>\n<article><h1>{{ .Title }}</h1>\n{{ .Content }}\n</article>\n{{ partial "htmltrust-signed-section.html" . }}\n</body></html>`);

@@ -49,7 +49,9 @@ services:
       GENERAL_API_KEY: ${HTMLTRUST_GENERAL_API_KEY:-sim_general_key}
       ADMIN_API_KEY: ${HTMLTRUST_ADMIN_API_KEY:-sim_admin_key}
       AUTHOR_API_KEY_PEPPER: ${HTMLTRUST_AUTHOR_API_KEY_PEPPER:-sim_author_api_key_pepper}
-      DIRECTORY_BASE_URL: ${HTMLTRUST_DIRECTORY_BASE_URL:-http://trust-server:3000}
+      # Signed key URLs must be reachable by a production-policy verifier,
+      # which accepts HTTPS only. Nginx proxies this test hostname internally.
+      DIRECTORY_BASE_URL: ${HTMLTRUST_DIRECTORY_BASE_URL:-https://trust.htmltrust.test}
       PORT: "3000"
     ports:
       # Loopback only. "3000:3000" publishes on 0.0.0.0, exposing the trust
@@ -186,6 +188,10 @@ services:
     volumes:
       - .:/workspace
       - ../htmltrust-browser-reference/build/chromium:/extension:ro
+      # npm records sibling file dependencies as relative symlinks. From
+      # /workspace/node_modules those links resolve to these root paths.
+      - ../htmltrust-browser-client:/htmltrust-browser-client:ro
+      - ../htmltrust-canonicalization:/htmltrust-canonicalization:ro
     networks:
       - htmltrust
     environment:
@@ -197,7 +203,9 @@ services:
     profiles: ["tools"]  # Only starts when explicitly requested
 
   nginx:
-    image: nginx:alpine
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
     networks:
       htmltrust:
         aliases:
@@ -211,7 +219,9 @@ services:
           - author8.htmltrust.test
           - author9.htmltrust.test
           - author10.htmltrust.test
+          - trust.htmltrust.test
     depends_on:
+      - trust-server
       - wp-1
       - wp-2
       - wp-3
@@ -219,9 +229,10 @@ services:
       - wp-5
     ports:
       # Loopback only. This fronts five WordPress installs whose admin
-      # credentials are fixed sim values; "8080:80" served them to the whole
+      # credentials are fixed sim values; publishing these ports to the whole
       # network the host is on.
-      - "127.0.0.1:${HTMLTRUST_PROXY_PORT:-8080}:80"
+      - "127.0.0.1:${HTMLTRUST_PROXY_PORT:-18080}:80"
+      - "127.0.0.1:${HTMLTRUST_TLS_PROXY_PORT:-18443}:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./.runtime/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./hugo-sites:/var/www/hugo:ro

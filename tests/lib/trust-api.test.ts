@@ -19,13 +19,17 @@ describe("TrustApiClient", () => {
   });
 
   it("signs content with author API key and new binding format", async () => {
-    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ contentHash: "sha256:abc", claimsHash: "sha256:def", signedAt: "2026-04-10T12:00:00Z", signature: "sig123", algorithm: "ed25519", keyid: "https://directory.test/api/keys/k1", authorId: "a1", domain: "https://example.test", claims: {} }) });
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ profile: "htmltrust-signature-v1", contentHash: "sha256:abc", claimsHash: "sha256:def", signedAt: "2026-04-10T12:00:00Z", scope: "url", location: "https://example.test/article", sourceURL: "https://example.test/article#fragment", signature: "sig123", algorithm: "ed25519", keyid: "https://directory.test/api/keys/k1", authorId: "a1", claims: [] }) });
     const result = await client.signContent("author-key-1", {
       contentHash: "sha256:abc",
-      claimsHash: "sha256:def",
+      sourceURL: "https://example.test/article#fragment",
+      scope: "url",
       signedAt: "2026-04-10T12:00:00Z",
-      domain: "https://example.test",
-      claims: { author: "Test", "signed-at": "2026-04-10T12:00:00Z", "claim:ContentType": "Article" },
+      claims: [
+        { name: "author", content: "Test" },
+        { name: "signed-at", content: "2026-04-10T12:00:00Z" },
+        { name: "claim:ContentType", content: "Article" },
+      ],
     });
     expect(mockFetch).toHaveBeenCalledWith("http://trust-server:3000/api/content/sign", expect.objectContaining({
       method: "POST", headers: { "Content-Type": "application/json", "X-AUTHOR-API-KEY": "author-key-1" },
@@ -34,10 +38,16 @@ describe("TrustApiClient", () => {
     const callArgs = mockFetch.mock.calls[0][1];
     const body = JSON.parse(callArgs.body);
     expect(body.contentHash).toBe("sha256:abc");
-    expect(body.claimsHash).toBe("sha256:def");
+    expect(body).not.toHaveProperty("claimsHash");
     expect(body.signedAt).toBe("2026-04-10T12:00:00Z");
-    expect(body.domain).toBe("https://example.test");
-    expect(body.claims).toEqual({ author: "Test", "signed-at": "2026-04-10T12:00:00Z", "claim:ContentType": "Article" });
+    expect(body.sourceURL).toBe("https://example.test/article#fragment");
+    expect(body.scope).toBe("url");
+    expect(body).not.toHaveProperty("domain");
+    expect(body.claims).toEqual([
+      { name: "author", content: "Test" },
+      { name: "signed-at", content: "2026-04-10T12:00:00Z" },
+      { name: "claim:ContentType", content: "Article" },
+    ]);
     expect(result.signature).toBe("sig123");
     expect(result.keyid).toBe("https://directory.test/api/keys/k1");
   });

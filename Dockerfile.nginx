@@ -1,0 +1,13 @@
+FROM nginx:1.29.1-alpine
+
+# Test-only wildcard certificate for the isolated htmltrust Docker network.
+# Browsers in the harness explicitly allow this self-signed certificate.
+RUN set -eux; \
+    apk add --no-cache openssl; \
+    mkdir -p /etc/nginx/certs; \
+    openssl req -x509 -nodes -newkey rsa:2048 -sha256 -days 3650 \
+      -subj "/CN=*.htmltrust.test" \
+      -addext "subjectAltName=DNS:*.htmltrust.test,DNS:htmltrust.test" \
+      -keyout /etc/nginx/certs/htmltrust.test.key \
+      -out /etc/nginx/certs/htmltrust.test.crt; \
+    apk del openssl

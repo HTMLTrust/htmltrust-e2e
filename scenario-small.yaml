@@ -39,7 +39,7 @@ trust_server:
   admin_api_key: sim_admin_key
 
 ollama:
-  model: "llama3.2:3b"
+  model: "llama3.2:1b"
   host: "http://localhost:11434"
 
-nginx_proxy_url: "http://localhost:8080"
+nginx_proxy_url: "https://localhost:18443"

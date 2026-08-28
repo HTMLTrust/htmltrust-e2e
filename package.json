@@ -5,7 +5,14 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "check": "npm test && npm run build && docker compose config --quiet",
     "start": "node --import tsx src/orchestrator.ts",
+    "config:nginx": "tsx src/prepare-nginx.ts",
+    "stack:up": "npm run config:nginx -- scenario-small.yaml && docker compose up -d --build --wait",
+    "stack:down": "docker compose down -v",
+    "smoke": "tsx src/smoke-test.ts scenario-small.yaml",
+    "browser:small": "docker compose run --rm --entrypoint npx playwright tsx src/run-phases-3-5.ts scenario-small.yaml",
+    "e2e:small": "./scripts/run-e2e.sh scenario-small.yaml",
     "test": "vitest run",
     "test:watch": "vitest"
   },

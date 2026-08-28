@@ -20,7 +20,7 @@ export interface ScenarioConfig {
    */
   trust_server: TrustDirectoryConfig;
   ollama: OllamaConfig;
-  nginx_proxy_url?: string; // e.g. "http://localhost:8080" when running from host
+  nginx_proxy_url?: string; // e.g. "https://localhost:18443" when running from host
 }
 
 export interface AuthorConfig {
@@ -159,15 +159,23 @@ export interface CreateAuthorResponse {
 }
 
 export interface SignContentResponse {
+  profile: "htmltrust-signature-v1";
+  context: "https://htmltrust.org/protocol/signed-section";
+  canonicalizationProfile: "htmltrust-c14n-v1";
+  attributeProfile: "htmltrust-attrs-v1";
+  urlProfile: "htmltrust-safe-url-v1";
   contentHash: string;
   claimsHash: string;
   signedAt: string;
+  scope: "url" | "origin";
+  location: string;
+  sourceURL: string;
   domain: string;
   authorId: string;
   signature: string;
   algorithm: string;
   keyid: string;
-  claims: Record<string, string>;
+  claims: Array<{ name: string; content: string }>;
   createdAt: string;
 }
 
