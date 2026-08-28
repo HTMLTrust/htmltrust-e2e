@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, type Page } from "playwright";
-import { DOM_SCRIPT_BODY } from "../src/lib/playwright-session.js";
+import { collectPageSectionIdentities, DOM_SCRIPT_BODY } from "../src/lib/playwright-session.js";
 
 const expression = `(async () => { ${DOM_SCRIPT_BODY} })()`;
 const fixtureAttributes = (signature: string): string =>
@@ -67,6 +67,12 @@ async function main(): Promise<void> {
     ];
     await navigate(page, nested);
     calls.length = 0;
+    // Exercise the exact string page-function used by runConsumerSession's
+    // source/live preflight. A tsx-transformed callback would carry an
+    // undefined __name helper across this serialization boundary.
+    const identities = await page.evaluate(collectPageSectionIdentities, nested) as { source: string[]; live: string[] };
+    assert.equal(identities.source.length, 2);
+    assert.equal(identities.live.length, 2);
     const nestedResult = await runWalker(page, nested, nestedSections);
     assert.equal(nestedResult.length, 2);
     assert.equal(await page.locator(".cs-verification-badges").count(), 2);

@@ -194,6 +194,22 @@ function authorIdFromKeyid(keyid: string, authors: AuthorProfile[]): string | nu
 }
 
 /**
+ * Page-context source/live identity preflight. Keep the function body
+ * self-contained because Playwright serializes it into the page: tsx/esbuild
+ * helpers such as __name are not defined in the browser evaluation realm.
+ */
+export function collectPageSectionIdentities(html: string): { source: string[]; live: string[] } {
+  const names = ["profile", "signature-scope", "signature", "keyid", "algorithm", "content-hash"];
+  const sourceDocument = new DOMParser().parseFromString(html || "", "text/html");
+  return {
+    source: Array.from(sourceDocument.querySelectorAll("signed-section")).map((section) =>
+      names.map((name) => name + "=" + (section.getAttribute(name) || "")).join("\u001f")),
+    live: Array.from(document.querySelectorAll("signed-section")).map((section) =>
+      names.map((name) => name + "=" + (section.getAttribute(name) || "")).join("\u001f")),
+  };
+}
+
+/**
  * Inline DOM walker + badge renderer. Runs in the page context so that
  * `document.querySelectorAll`, `window.location`, and DOM mutation are
  * available. Per signed-section it ships the exact response source and the
@@ -506,15 +522,10 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
         // Preflight the same source/live identity contract in Node. The page
         // walker repeats this check in its own DOM context as a defense in
         // depth, but this keeps the session path itself fail-closed too.
-        const identities = await page.evaluate((html) => {
-          const names = ["profile", "signature-scope", "signature", "keyid", "algorithm", "content-hash"];
-          const identity = (section: Element) => names.map((name) => name + "=" + (section.getAttribute(name) || "")).join("\u001f");
-          const sourceDocument = new DOMParser().parseFromString(html || "", "text/html");
-          return {
-            source: Array.from(sourceDocument.querySelectorAll("signed-section")).map(identity),
-            live: Array.from(document.querySelectorAll("signed-section")).map(identity),
-          };
-        }, sourceSnapshot.html);
+        const identities = await page.evaluate(collectPageSectionIdentities, sourceSnapshot.html) as {
+          source: string[];
+          live: string[];
+        };
         const mapping = mapSourceSnapshot(
           sourceSnapshot.html,
           sourceSnapshot.sections,
