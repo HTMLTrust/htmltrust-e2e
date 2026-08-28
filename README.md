@@ -7,7 +7,7 @@
 - For: contributors and continuous integration maintainers
 - Reading time: 8 minutes
 
-This harness publishes v1 signed content through WordPress and Hugo, serves it over test HTTPS, verifies the original response source in Chromium, and records research output. Simulated authors generate Ed25519 keys locally. The alpha directory receives public keys only. Browser policy combines weighted opinions from independent alpha and beta directory databases.
+This harness publishes v1 signed content through WordPress and Hugo, serves it over test HTTPS, verifies the original response source, and records research output. Simulated authors generate Ed25519 keys locally. The alpha directory receives public keys only. Browser policy combines weighted opinions from independent alpha and beta directory databases.
 
 ## Choose a path
 
@@ -15,9 +15,10 @@ This harness publishes v1 signed content through WordPress and Hugo, serves it o
 - Run `npm test -- tests/lib/playwright-session.test.ts && npm run build` for
   the browser lifecycle evidence checks (source mapping, nested markers,
   mutation invalidation, and reload snapshot recovery).
-- Run `npm run test:browser` for the same lifecycle checks in the production
-  DOM walker. This uses the checked-in Playwright Docker image and does not
-  start the integration stack; `npm test` remains browser-download-free.
+- Run `npm run test:browser` for lifecycle checks in the production DOM walker
+  across Chromium, Firefox, and WebKit. This uses the checked-in Playwright
+  Docker image and does not start the integration stack; `npm test` remains
+  browser-download-free.
 - Run `npm run test:wordpress-local-signing` after the smoke setup to exercise
   the CMS plugin's admin UI, local key document, and emitted signature.
 - Run `npm run e2e:small` for the complete three-author simulation.
@@ -104,7 +105,13 @@ Hugo integration repository. This harness writes its own temporary Hugo sites
 and uses the Hugo partial bundled in `htmltrust-cms-reference`; it does not
 consume the separate `htmltrust-hugo` repository.
 
-The browser phase uses the sibling browser-reference checkout and its Chromium build. The one-command runner builds it before starting Docker.
+The full simulation uses the sibling browser-reference checkout and its
+Chromium build. The one-command runner builds it before starting Docker. The
+standalone lifecycle suite does not require the extension build: all three
+engines execute the same production verification and lifecycle DOM walker, so
+Firefox and WebKit still exercise real source extraction, rendered comparison,
+mutation invalidation, and navigation reset behavior despite the reference
+extension currently targeting Chromium at runtime.
 
 ## Install and check the harness
 
@@ -128,7 +135,7 @@ npm run build
 
 These checks need the canonicalization and browser-client sibling directories.
 They do not start Docker, Hugo, or Ollama. Install and build the
-browser-reference extension only for the browser flow:
+browser-reference extension for the full simulation:
 
 ```bash
 cd ../htmltrust-browser-reference
@@ -164,7 +171,15 @@ The runner installs and builds the sibling browser packages, checks this reposit
 
 ## Run the full simulation
 
-The checked-in full scenario uses ten authors and 1,000 consumers. Copy it before changing the Ollama endpoint or model:
+The checked-in full scenario uses ten authors and 1,000 consumers. It expects
+Ollama on the host with the 3B model:
+
+```bash
+ollama pull llama3.2:3b
+./scripts/run-e2e.sh scenario.yaml
+```
+
+Copy the scenario first if you want to change its endpoint or model:
 
 ```bash
 cp scenario.yaml scenario-local.yaml
@@ -172,7 +187,37 @@ cp scenario.yaml scenario-local.yaml
 ./scripts/run-e2e.sh scenario-local.yaml
 ```
 
-Publication runs on the host, so use `http://localhost:11434` as the Ollama host. Browser verification runs inside Docker. The generated article URLs remain `https://authorN.htmltrust.test/...` on the Docker network.
+Publication runs on the host, so both checked-in scenarios use
+`http://localhost:11434` for Ollama. Browser verification runs inside Docker.
+The generated article URLs remain
+`https://authorN.htmltrust.test/...` on the Docker network.
+
+## Run browser lifecycle checks in Docker
+
+The browser lifecycle command runs all three Playwright engines without
+starting the integration stack:
+
+```bash
+npm run test:browser
+```
+
+This command runs inside the pinned Playwright image, which supplies the
+browser binaries. To run one engine while debugging, pass its name to the
+script directly:
+
+```bash
+docker compose run --rm --no-deps --env HTMLTRUST_BROWSERS=firefox \
+  --entrypoint npx playwright tsx scripts/browser-lifecycle-test.ts
+```
+
+The suite drives the production `DOM_SCRIPT_BODY` used by consumer sessions.
+It keeps the verifier boundary in Node, captures source sections separately
+from live `outerHTML`, waits for mutation invalidation, and replaces the
+navigation snapshot before checking the next document. The browser-reference
+extension is not loaded into Firefox or WebKit because its current runtime
+adapter is Chromium-specific. Chromium extension loading remains an optional
+integration concern; the cross-engine lifecycle assertions do not depend on
+that packaging detail.
 
 ## Run browser phases in Docker
 
