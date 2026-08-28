@@ -11,7 +11,8 @@ Start here: use the pinned v0.2.2-compatible layout below
 
 - For a quick local check, prepare the sibling packages, then run `npm test`
   and `npm run build`.
-- For the integration smoke test, install Docker, Hugo, and Ollama, then run
+- For the integration smoke test, complete the sibling checkout, pin, and
+  install steps below. Then install Docker, Hugo, and Ollama before running
   `npm start -- scenario-small.yaml`.
 - For the browser phase in a Playwright container, use the split flow below.
 
@@ -42,17 +43,20 @@ git clone https://github.com/HTMLTrust/htmltrust-server-reference.git
 ```
 
 This harness and its CI currently use the v0.2.2-compatible stack. Pin the two
-JavaScript dependencies to the revisions used by CI before installing:
+JavaScript dependencies to the revisions used by CI before installing. Pin the
+extension too when running the browser phase:
 
 ```bash
 git -C htmltrust-canonicalization checkout 79b0d52fecd958f8fc7ade713fe0799ca1e79626
-git -C htmltrust-browser-client checkout 09e8c7552c8111a2cedd83fa45f4ffe3811bf5ca
+git -C htmltrust-browser-client checkout 698a6fba7ada94ea1e26348dda0e1c87e8dd8fc9
+git -C htmltrust-browser-reference checkout 3851ff16302a1b0d6a16d38cf46ee7a1a9e3b0f5
 ```
 
 The current canonicalization `main` contains the newer 0.3.x package, while
 the browser client still declares a 0.2.2 peer dependency. Do not combine
 those mains with this harness unless you have verified and updated the full
-stack together.
+stack together. The pinned browser-reference revision declares the same
+browser-client commit and the canonicalization v0.2.2 package.
 
 ## Prerequisites
 
@@ -67,8 +71,8 @@ For the full simulation, also install:
 - Hugo on the host
 - Ollama with the model named by the scenario
 
-The extension-aware browser phase also needs the browser-reference checkout
-and its Chromium build.
+The extension-aware browser phase also needs the pinned browser-reference
+checkout and its Chromium build.
 
 ## Install and check the harness
 
@@ -99,7 +103,9 @@ cd ../htmltrust-e2e
 ```
 
 The explicit flag allows the pinned Git dependency to build its `dist/`
-directory when npm is configured globally to skip lifecycle scripts.
+directory when npm is configured globally to skip lifecycle scripts. The
+browser-reference lock file resolves the same browser-client revision used by
+the harness.
 
 ## Run the small simulation
 
@@ -140,7 +146,8 @@ checked-in full scenario uses `host.docker.internal` for Docker-oriented runs.
 ## Run browser phases in Docker
 
 Use this flow when the host lacks a Playwright browser. Run it from this
-repository after `npm ci` and the browser-reference Chromium build:
+repository after completing the pinned sibling setup, `npm ci`, and the
+browser-reference Chromium build:
 
 ```bash
 docker compose up -d --build --wait
