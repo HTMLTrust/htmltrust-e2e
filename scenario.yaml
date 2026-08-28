@@ -57,4 +57,4 @@ trust_directories:
 
 ollama:
   model: "llama3.2:3b"
-  host: "http://host.docker.internal:11434"
+  host: "http://localhost:11434"
