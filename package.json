@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run typecheck:scripts",
+    "typecheck:scripts": "tsc --project tsconfig.scripts.json",
     "check": "npm test && npm run build && docker compose config --quiet",
     "start": "node --import tsx src/orchestrator.ts",
     "config:nginx": "tsx src/prepare-nginx.ts",
@@ -16,6 +17,7 @@
     "test:analysis": "python3 -m unittest discover -s analysis -p 'test_*.py'",
     "test:browser": "npm run test:browser:engines",
     "test:browser:engines": "docker compose run --rm --no-deps --entrypoint npx playwright tsx scripts/browser-lifecycle-test.ts",
+    "test:browser:extension": "docker compose run --rm --no-deps --entrypoint npx playwright tsx scripts/chromium-extension-smoke-test.ts",
     "test:wordpress-local-signing": "docker compose run --rm --entrypoint npx playwright tsx scripts/wordpress-local-signing-test.ts",
     "e2e:small": "./scripts/run-e2e.sh scenario-small.yaml",
     "test": "vitest run",

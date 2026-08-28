@@ -45,7 +45,7 @@ required_siblings=(
 declare -A expected_revisions=(
   [htmltrust-canonicalization]=760593d4a02e9fffa56dc4d002eb52ab2ade1b49
   [htmltrust-browser-client]=70c5ddb6ed23c06c0b1c46d5284618fb99a28aac
-  [htmltrust-browser-reference]=b9ec8a2af7d495ece58b5027b4f4cb97c7e5f3ff
+  [htmltrust-browser-reference]=a048b192f022b19d8d868b521aaf7091a550c217
   [htmltrust-cms-reference]=1b94416250b98123c125e60da92d6a6f2e16a9ce
   [htmltrust-server-reference]=07a286dfd0a219e75286e983315d5a886e9e1a2d
 )
@@ -97,6 +97,9 @@ docker compose --project-directory "$repo_dir" up -d --build --wait
 
 echo "Publishing signed content"
 node --import tsx "$repo_dir/src/smoke-test.ts" "$repo_dir/$scenario"
+
+echo "Checking the built Chromium extension"
+npm --prefix "$repo_dir" run test:browser:extension
 
 echo "Checking WordPress browser-local signing"
 docker compose --project-directory "$repo_dir" run --rm --entrypoint npx playwright \

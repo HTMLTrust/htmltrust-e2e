@@ -21,6 +21,8 @@ This harness publishes v1 signed content through WordPress and Hugo, serves it o
   browser-download-free.
 - Run `npm run test:wordpress-local-signing` after the smoke setup to exercise
   the CMS plugin's admin UI, local key document, and emitted signature.
+- Run `npm run test:browser:extension` after publication to load the built MV3
+  extension and verify the first article in Chromium.
 - Run `npm run e2e:small` for the complete three-author simulation.
 - Use the split commands below when you need to inspect the stack between publication and browser verification.
 
@@ -67,7 +69,7 @@ The frozen v1 integration uses these immutable revisions:
 ```bash
 git -C htmltrust-canonicalization checkout 760593d4a02e9fffa56dc4d002eb52ab2ade1b49
 git -C htmltrust-browser-client checkout 70c5ddb6ed23c06c0b1c46d5284618fb99a28aac
-git -C htmltrust-browser-reference checkout b9ec8a2af7d495ece58b5027b4f4cb97c7e5f3ff
+git -C htmltrust-browser-reference checkout a048b192f022b19d8d868b521aaf7091a550c217
 git -C htmltrust-cms-reference checkout 1b94416250b98123c125e60da92d6a6f2e16a9ce
 git -C htmltrust-server-reference checkout 07a286dfd0a219e75286e983315d5a886e9e1a2d
 ```
@@ -86,9 +88,10 @@ For unit tests and the TypeScript build:
 - the sibling canonicalization and browser-client checkouts above, because the
   harness manifest uses local `file:` dependencies
 
-For browser lifecycle tests, also check out and build the sibling
-`htmltrust-browser-reference`. The unit suite does not need a browser or that
-extension checkout. For the full simulation, also install:
+For the full simulation, also check out and build the sibling
+`htmltrust-browser-reference`. The standalone lifecycle suite uses the pinned
+Playwright image and does not need the extension checkout. The unit suite does
+not need a browser. For the full simulation, also install:
 
 - Docker Engine with Compose v2
 - Hugo on the host
@@ -105,13 +108,14 @@ Hugo integration repository. This harness writes its own temporary Hugo sites
 and uses the Hugo partial bundled in `htmltrust-cms-reference`; it does not
 consume the separate `htmltrust-hugo` repository.
 
-The full simulation uses the sibling browser-reference checkout and its
-Chromium build. The one-command runner builds it before starting Docker. The
-standalone lifecycle suite does not require the extension build: all three
-engines execute the same production verification and lifecycle DOM walker, so
-Firefox and WebKit still exercise real source extraction, rendered comparison,
-mutation invalidation, and navigation reset behavior despite the reference
-extension currently targeting Chromium at runtime.
+The one-command runner builds the sibling browser-reference Chromium
+extension and runs a one-page extension smoke check after publication. Its
+consumer sessions still use the direct production DOM walker. The standalone
+lifecycle suite runs that walker in Chromium, Firefox, and WebKit, so Firefox
+and WebKit exercise real source extraction, rendered comparison, mutation
+invalidation, and navigation reset behavior. The extension smoke is
+Chromium-only because the reference extension's current runtime adapter is
+Chromium-specific.
 
 ## Install and check the harness
 
@@ -214,10 +218,9 @@ The suite drives the production `DOM_SCRIPT_BODY` used by consumer sessions.
 It keeps the verifier boundary in Node, captures source sections separately
 from live `outerHTML`, waits for mutation invalidation, and replaces the
 navigation snapshot before checking the next document. The browser-reference
-extension is not loaded into Firefox or WebKit because its current runtime
-adapter is Chromium-specific. Chromium extension loading remains an optional
-integration concern; the cross-engine lifecycle assertions do not depend on
-that packaging detail.
+extension is not part of this command. `npm run e2e:small` additionally loads
+the built extension in Chromium and checks its marker plus
+`GET_PAGE_VERIFICATIONS` result on the first published article.
 
 ## Run browser phases in Docker
 
@@ -227,6 +230,7 @@ Use this split flow when you want to inspect publication output before browser v
 npm run config:nginx -- scenario-small.yaml
 docker compose up -d --build --wait
 npx tsx src/smoke-test.ts scenario-small.yaml
+npm run test:browser:extension
 npm run test:wordpress-local-signing
 docker compose run --rm --entrypoint npx playwright tsx src/run-phases-3-5.ts scenario-small.yaml
 ```
