@@ -183,6 +183,11 @@ ollama pull llama3.2:3b
 ./scripts/run-e2e.sh scenario.yaml
 ```
 
+All simulated browsers share the Playwright container's network address. The
+Compose services therefore raise the directory's per-IP ceilings to 20,000
+requests and 10,000 writes per minute while keeping both limiters enabled.
+The directory server keeps its production defaults outside this harness.
+
 Copy the scenario first if you want to change its endpoint or model:
 
 ```bash
@@ -301,7 +306,8 @@ Use the same names with `BETA` for the second directory. Compose accepts
 `HTMLTRUST_DIRECTORY_ALPHA_PORT`, `HTMLTRUST_DIRECTORY_BETA_PORT`,
 `HTMLTRUST_DIRECTORY_ALPHA_PUBLIC_URL`,
 `HTMLTRUST_DIRECTORY_BETA_PUBLIC_URL`, `HTMLTRUST_PROXY_PORT`,
-`HTMLTRUST_TLS_PROXY_PORT`, `WP_DB_ROOT_PASSWORD`, and `WP_DB_PASSWORD`.
+`HTMLTRUST_TLS_PROXY_PORT`, `HTMLTRUST_E2E_RATE_LIMIT_GLOBAL`,
+`HTMLTRUST_E2E_RATE_LIMIT_WRITE`, `WP_DB_ROOT_PASSWORD`, and `WP_DB_PASSWORD`.
 The checked-in credentials are for local testing only.
 
 `URL` is the host-side API origin. `CONTAINER_URL` is the matching origin on

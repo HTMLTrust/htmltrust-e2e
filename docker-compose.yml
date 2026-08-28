@@ -52,6 +52,12 @@ services:
       # Signed key URLs must be reachable by a production-policy verifier,
       # which accepts HTTPS only. Nginx proxies this test hostname internally.
       DIRECTORY_BASE_URL: ${HTMLTRUST_DIRECTORY_ALPHA_PUBLIC_URL:-https://trust-a.htmltrust.test}
+      # The Playwright phase represents 1,000 independent consumers from one
+      # tools-container IP. Keep the limiters active with simulation-scale
+      # ceilings; the server repository's production defaults remain 600
+      # total and 60 writes per IP each minute.
+      RATE_LIMIT_GLOBAL: ${HTMLTRUST_E2E_RATE_LIMIT_GLOBAL:-20000}
+      RATE_LIMIT_WRITE: ${HTMLTRUST_E2E_RATE_LIMIT_WRITE:-10000}
       PORT: "3000"
     ports:
       # Loopback only. "3000:3000" publishes on 0.0.0.0, exposing the trust
@@ -80,6 +86,8 @@ services:
       ADMIN_API_KEY: ${HTMLTRUST_DIRECTORY_BETA_ADMIN_API_KEY:-sim_admin_key}
       AUTHOR_API_KEY_PEPPER: ${HTMLTRUST_DIRECTORY_BETA_AUTHOR_API_KEY_PEPPER:-sim_beta_author_api_key_pepper}
       DIRECTORY_BASE_URL: ${HTMLTRUST_DIRECTORY_BETA_PUBLIC_URL:-https://trust-b.htmltrust.test}
+      RATE_LIMIT_GLOBAL: ${HTMLTRUST_E2E_RATE_LIMIT_GLOBAL:-20000}
+      RATE_LIMIT_WRITE: ${HTMLTRUST_E2E_RATE_LIMIT_WRITE:-10000}
       PORT: "3000"
     ports:
       - "127.0.0.1:${HTMLTRUST_DIRECTORY_BETA_PORT:-3001}:3000"
