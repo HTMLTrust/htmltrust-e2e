@@ -1,4 +1,6 @@
+import path from "node:path";
 import { composeUp, composeExec } from "../lib/docker.js";
+import { generateNginxConfig } from "../lib/nginx-config.js";
 import { TrustApiClient } from "../lib/trust-api.js";
 import type { ScenarioConfig, AuthorProfile, PhaseResult } from "../types.js";
 
@@ -7,7 +9,11 @@ export async function runPhase1(config: ScenarioConfig, authors: AuthorProfile[]
   const start = Date.now();
 
   console.log("[Phase 1] Bringing up Docker infrastructure...");
+  await generateNginxConfig(authors, path.join(e2eDir, ".runtime", "nginx.conf"));
   await composeUp(e2eDir);
+  // composeUp is also valid against an existing stack. Reload so a changed
+  // scenario cannot leave nginx serving the previous author set.
+  await composeExec(e2eDir, "nginx", ["nginx", "-s", "reload"]);
 
   const client = new TrustApiClient(config.trust_server.url, config.trust_server.general_api_key, config.trust_server.admin_api_key);
 
@@ -27,7 +33,7 @@ export async function runPhase1(config: ScenarioConfig, authors: AuthorProfile[]
     const result = await client.createAuthor({
       name: author.name, keyType: "HUMAN", keyAlgorithm: "ED25519",
       description: `${author.cmsType} author for E2E simulation`,
-      url: `http://${author.domain}`,
+      url: `https://${author.domain}`,
     });
     author.id = result.author.id;
     author.authorApiKey = result.authorApiKey;
@@ -64,9 +70,10 @@ export async function runPhase1(config: ScenarioConfig, authors: AuthorProfile[]
     try {
       const c = author.wpContainerName!;
       await composeExec(e2eDir, c, ["wp", "core", "install",
-        `--url=http://${author.domain}`, `--title=${author.name} Blog`,
+        `--url=https://${author.domain}`, `--title=${author.name} Blog`,
         "--admin_user=admin", "--admin_password=admin", `--admin_email=admin@${author.domain}`,
         "--skip-email", "--allow-root"]);
+      await composeExec(e2eDir, c, ["wp", "option", "update", "permalink_structure", "", "--allow-root"]);
 
       // Activate the content-signing plugin. The plugin source is mounted into
       // the container by docker-compose at wp-content/plugins/content-signing.

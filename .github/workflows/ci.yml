@@ -22,20 +22,24 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: HTMLTrust/htmltrust-canonicalization
-          ref: 79b0d52fecd958f8fc7ade713fe0799ca1e79626
+          ref: b0c8f305425de190a7f209ac117d34f88c2b1946
           path: htmltrust-canonicalization
           persist-credentials: false
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: HTMLTrust/htmltrust-browser-client
-          ref: 698a6fba7ada94ea1e26348dda0e1c87e8dd8fc9
+          ref: d25c6d3c2d0f4d67483da20853f22e94a11b89cc
           path: htmltrust-browser-client
           persist-credentials: false
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
+
+      - name: Install canonicalization runtime dependency
+        working-directory: htmltrust-canonicalization/javascript
+        run: npm install --package-lock=false --ignore-scripts --no-audit --no-fund
 
       - name: Build browser client
         working-directory: htmltrust-browser-client

@@ -2,13 +2,13 @@ FROM node:22-slim
 WORKDIR /app
 
 # Copy the local canonicalization package first
-COPY htmltrust-canonicalization/javascript /tmp/canonicalization
+COPY htmltrust-canonicalization/javascript /app/local-packages/canonicalization
 
 # Copy server source
 COPY htmltrust-server-reference/package*.json ./
 
-# The published package.json points @htmltrust/canonicalization at a private
-# GitHub repo; this image builds against the sibling checkout instead. That
+# The published package.json pins a GitHub archive. This image builds against
+# the sibling checkout instead. That
 # swap used to be a `sed` on package.json, which fails open -- if the
 # dependency line ever moves or reformats, the substitution silently does
 # nothing and the build falls back to fetching whatever the GitHub ref resolves
@@ -21,10 +21,13 @@ COPY htmltrust-server-reference/package*.json ./
 # the two as npm workspaces so the lockfile already describes the local path.
 # Until then --ignore-scripts is what keeps dependency install hooks from
 # running during the image build.
-RUN npm pkg set "dependencies.@htmltrust/canonicalization=file:///tmp/canonicalization" \
+RUN npm pkg set "dependencies.@htmltrust/canonicalization=file:///app/local-packages/canonicalization" \
     && npm install --omit=dev --ignore-scripts --no-audit --no-fund
 
-COPY htmltrust-server-reference/ .
+# Copy runtime source explicitly. Copying the whole checkout also copies a
+# developer's node_modules directory when the parent workspace is the Docker
+# build context, which can overwrite the dependencies installed above.
+COPY htmltrust-server-reference/src ./src
 EXPOSE 3000
 
 # Drop root. The server only reads its source and talks to Mongo over the

@@ -42,10 +42,10 @@ export class TrustApiClient {
     authorApiKey: string,
     data: {
       contentHash: string;
-      claimsHash: string;
+      sourceURL: string;
+      scope: "url" | "origin";
       signedAt: string;
-      domain: string;
-      claims: Record<string, string>;
+      claims: Array<{ name: string; content: string }>;
     },
   ): Promise<SignContentResponse> {
     return this.request("/api/content/sign", { method: "POST", headers: { "X-AUTHOR-API-KEY": authorApiKey }, body: data });

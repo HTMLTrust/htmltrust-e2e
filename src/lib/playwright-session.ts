@@ -1,5 +1,6 @@
 import { chromium } from "playwright";
 import { createHash } from "node:crypto";
+import { request as httpsRequest } from "node:https";
 import path from "node:path";
 import {
   verifySignedSection,
@@ -35,6 +36,38 @@ interface VerifyAndScoreResult {
   authorId: string | null;
   /** Aggregated report count across queried directories. */
   reports: number;
+}
+
+/**
+ * Fetch the isolated test directory through Nginx while accepting its
+ * generated self-signed certificate. Other destinations retain Node's normal
+ * certificate validation. The production extension uses the browser trust
+ * store and never calls this helper.
+ */
+async function fetchTestKeyDocument(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.hostname !== "trust.htmltrust.test") return fetch(input, init);
+  if (url.protocol !== "https:") throw new Error("test directory key URL must use HTTPS");
+
+  return new Promise<Response>((resolve, reject) => {
+    const req = httpsRequest(url, {
+      method: init?.method || "GET",
+      headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      rejectUnauthorized: false,
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => {
+        resolve(new Response(Buffer.concat(chunks), {
+          status: res.statusCode || 500,
+          statusText: res.statusMessage,
+          headers: res.headers as HeadersInit,
+        }));
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 /**
@@ -102,23 +135,41 @@ function authorIdFromKeyid(keyid: string, authors: AuthorProfile[]): string | nu
 /**
  * Inline DOM walker + badge renderer. Runs in the page context so that
  * `document.querySelectorAll`, `window.location`, and DOM mutation are
- * available. Per signed-section it ships the section's outerHTML to the
- * exposed Node-side helper which calls verifySignedSection /
+ * available. Per signed-section it ships the exact response source and the
+ * live outerHTML to the exposed Node-side helper, which calls verifySignedSection /
  * evaluateTrustPolicy from @htmltrust/browser-client.
  *
- * Why Node-side: the simulation runs over plain HTTP, so SubtleCrypto is
- * unavailable in-page; and the lib's resolver chain wants `globalThis.fetch`
- * which behaves more predictably from Node than from the page (which is
- * subject to CORS and same-origin rules per request).
+ * Why Node-side: key resolution uses Docker-only directory URLs, and the
+ * library resolver chain is deliberately exercised outside page CORS.
  */
 const DOM_SCRIPT_BODY = `
   const results = [];
-  const sourceSections = Array.isArray(window.__htmltrustSourceSections) ? window.__htmltrustSourceSections : [];
-  const sections = document.querySelectorAll("signed-section[signature]");
+  const snapshot = window.__htmltrustSourceSnapshot || { html: "", url: window.location.href, sections: [] };
+  const sourceDocument = new DOMParser().parseFromString(snapshot.html || "", "text/html");
+  const sourceNodes = Array.from(sourceDocument.querySelectorAll("signed-section"));
+  const identityAttributes = ["profile", "signature-scope", "signature", "keyid", "algorithm", "content-hash"];
+  const identity = (section) => identityAttributes.map((name) => name + "=" + (section.getAttribute(name) || "")).join("\\u001f");
+  const sourceByIdentity = new Map();
+  sourceNodes.forEach((section, index) => {
+    const key = identity(section);
+    const queue = sourceByIdentity.get(key) || [];
+    queue.push(snapshot.sections[index] || "");
+    sourceByIdentity.set(key, queue);
+  });
+  const sourceBaseElement = sourceDocument.querySelector("base[href]");
+  let sourceBaseUrl = snapshot.url;
+  if (sourceBaseElement) {
+    try {
+      sourceBaseUrl = new URL(sourceBaseElement.getAttribute("href") || "", snapshot.url).href;
+    } catch {
+      sourceBaseUrl = snapshot.url;
+    }
+  }
+  const sections = document.querySelectorAll("signed-section");
   for (const section of sections) {
-    const origin = window.location.origin;
+    const origin = new URL(snapshot.url).origin;
     const renderedHtml = section.outerHTML;
-    const sourceHtml = sourceSections[results.length] || "";
+    const sourceHtml = (sourceByIdentity.get(identity(section)) || []).shift() || "";
     const html = sourceHtml || renderedHtml;
 
     // Best-effort author display name from inner <meta name="author">,
@@ -135,7 +186,9 @@ const DOM_SCRIPT_BODY = `
       html,
       renderedHtml,
       origin,
-      baseUrl: window.location.href
+      baseUrl: sourceBaseUrl,
+      renderedBaseUrl: document.baseURI,
+      documentUrl: snapshot.url
     });
 
     // Map indicator -> legacy class suffix used in tests/reports.
@@ -235,25 +288,25 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
 
-  // Node-side SHA-256: returns canonical unpadded standard Base64, matching
-  // the current HTMLTrust wire format. Used because simulation pages run over HTTP, where
-  // SubtleCrypto is blocked.
+  // Node-side SHA-256 returns canonical unpadded standard Base64 and keeps
+  // verification deterministic across the Docker browser images.
   const nodeHash = async (canonical: string): Promise<string> =>
     createHash("sha256").update(canonical, "utf-8").digest("base64").replace(/=+$/, "");
 
-  // Build the resolver chain once per session. The e2e harness intentionally
-  // uses local plain-HTTP key URLs inside Docker, so it uses the lower-level
-  // direct URL resolver here instead of the browser client's production
-  // network-policy wrapper.
-  const keyResolvers = [directUrlResolver()];
+  // Build the resolver once per session. The signed keyid remains an HTTPS
+  // URL and is fetched through Nginx. Only the generated test certificate is
+  // accepted by the Node-side verification helper.
+  const keyResolvers = [directUrlResolver({ fetch: fetchTestKeyDocument })];
 
   await context.exposeFunction(
     "__htmltrustVerifyAndScore",
-    async (input: { html: string; renderedHtml: string; origin: string; baseUrl: string }): Promise<VerifyAndScoreResult> => {
+    async (input: { html: string; renderedHtml: string; origin: string; baseUrl: string; renderedBaseUrl: string; documentUrl: string }): Promise<VerifyAndScoreResult> => {
       const verify = await verifySignedSection(input.html, {
         keyResolvers,
         origin: input.origin,
         baseUrl: input.baseUrl,
+        renderedBaseUrl: input.renderedBaseUrl,
+        documentUrl: input.documentUrl,
         renderedSection: input.renderedHtml,
         hash: nodeHash,
         debug: process.env.HTMLTRUST_DEBUG === "1",
@@ -340,19 +393,28 @@ export async function runConsumerSession(opts: SessionOptions): Promise<SessionL
       const article = authorArticles[Math.floor(Math.random() * authorArticles.length)];
       try {
         const response = await page.goto(article.url, { waitUntil: "networkidle", timeout: 15_000 });
+        let sourceHtml = "";
+        let sourceUrl = article.url;
         let sourceSections: string[] = [];
         try {
-          sourceSections = response ? extractSignedSections(await response.text()) : [];
+          if (response) {
+            sourceHtml = await response.text();
+            sourceUrl = response.url();
+            sourceSections = extractSignedSections(sourceHtml);
+          }
         } catch {
+          sourceHtml = "";
           sourceSections = [];
         }
 
         // Run the DOM walker. It calls __htmltrustVerifyAndScore per
         // signed-section, preferring the original source snapshot and
         // comparing it to the rendered DOM when both are available.
-        await page.evaluate((sections) => {
-          (window as unknown as { __htmltrustSourceSections?: string[] }).__htmltrustSourceSections = sections;
-        }, sourceSections);
+        await page.evaluate((snapshot) => {
+          (window as unknown as {
+            __htmltrustSourceSnapshot?: { html: string; url: string; sections: string[] };
+          }).__htmltrustSourceSnapshot = snapshot;
+        }, { html: sourceHtml, url: sourceUrl, sections: sourceSections });
         const asyncExpression = `(async () => { ${DOM_SCRIPT_BODY} })()`;
         const results = (await page.evaluate(asyncExpression)) as Array<{
           authorId: string | null;

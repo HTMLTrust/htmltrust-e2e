@@ -1,20 +1,19 @@
 # HTMLTrust end-to-end harness
 
-Run the HTMLTrust simulation from a fresh checkout, or run its unit tests and
-TypeScript build. This repository uses local packages from sibling checkouts.
+- Maintainer: Jason Grey
+- Updated: 2026-08-28
+- Version: 0.1.0, frozen v1 profile
+- Status: Active integration harness
+- For: contributors and continuous integration maintainers
+- Reading time: 8 minutes
 
-Status: active integration harness
-Primary readers: contributors and CI maintainers
-Start here: use the pinned v0.2.2-compatible layout below
+This harness publishes v1 signed content through WordPress and Hugo, serves it over test HTTPS, verifies the original response source in Chromium, applies trust policy, and records research output. It uses local packages from sibling checkouts.
 
 ## Choose a path
 
-- For a quick local check, prepare the sibling packages, then run `npm test`
-  and `npm run build`.
-- For the integration smoke test, complete the sibling checkout, pin, and
-  install steps below. Then install Docker, Hugo, and Ollama before running
-  `npm start -- scenario-small.yaml`.
-- For the browser phase in a Playwright container, use the split flow below.
+- Run `npm test && npm run build` when you are changing TypeScript helpers.
+- Run `npm run e2e:small` for the complete three-author simulation.
+- Use the split commands below when you need to inspect the stack between publication and browser verification.
 
 ## Checkout layout and compatible revisions
 
@@ -42,21 +41,20 @@ git clone https://github.com/HTMLTrust/htmltrust-e2e.git
 git clone https://github.com/HTMLTrust/htmltrust-server-reference.git
 ```
 
-This harness and its CI currently use the v0.2.2-compatible stack. Pin the two
-JavaScript dependencies to the revisions used by CI before installing. Pin the
-extension too when running the browser phase:
+The frozen v1 integration uses these immutable revisions:
 
 ```bash
-git -C htmltrust-canonicalization checkout 79b0d52fecd958f8fc7ade713fe0799ca1e79626
-git -C htmltrust-browser-client checkout 698a6fba7ada94ea1e26348dda0e1c87e8dd8fc9
-git -C htmltrust-browser-reference checkout 3851ff16302a1b0d6a16d38cf46ee7a1a9e3b0f5
+git -C htmltrust-canonicalization checkout b0c8f305425de190a7f209ac117d34f88c2b1946
+git -C htmltrust-browser-client checkout d25c6d3c2d0f4d67483da20853f22e94a11b89cc
+git -C htmltrust-browser-reference checkout 5237f07098da8b6542f0fd8f1c613ae8dbf4e6dd
+git -C htmltrust-cms-reference checkout 69aafdfad2c81766f2717b88525f2569370f96cd
+git -C htmltrust-server-reference checkout f84f51482ba2a925d9b5ff148185adf6dedef566
 ```
 
-The current canonicalization `main` contains the newer 0.3.x package, while
-the browser client still declares a 0.2.2 peer dependency. Do not combine
-those mains with this harness unless you have verified and updated the full
-stack together. The pinned browser-reference revision declares the same
-browser-client commit and the canonicalization v0.2.2 package.
+The one-command runner checks these revisions and requires clean sibling working
+trees. This keeps a recorded run tied to the source versions above. When you are
+developing a sibling package, set `HTMLTRUST_ALLOW_UNPINNED=1` for that run and
+record the actual revision and working-tree state with the result.
 
 ## Prerequisites
 
@@ -71,16 +69,18 @@ For the full simulation, also install:
 - Hugo on the host
 - Ollama with the model named by the scenario
 
-The extension-aware browser phase also needs the pinned browser-reference
-checkout and its Chromium build.
+The browser phase uses the sibling browser-reference checkout and its Chromium build. The one-command runner builds it before starting Docker.
 
 ## Install and check the harness
 
-Build both local package dependencies before installing this repository. The
-browser client's `dist/` directory is ignored by Git, and npm needs it when it
-installs the local `file:` dependency.
+Install the canonicalizer's parser dependency and build the browser client
+before installing this repository. The browser client's `dist/` directory is
+ignored by Git, and npm needs it when it installs the local `file:` dependency.
 
 ```bash
+cd ../htmltrust-canonicalization/javascript
+npm install --package-lock=false
+
 cd ../htmltrust-browser-client
 npm ci
 npm run build
@@ -91,9 +91,7 @@ npm test
 npm run build
 ```
 
-These checks still need the two sibling directories. They do not start Docker,
-Hugo, or Ollama. Install the browser-reference extension only for the browser
-flow:
+These checks need the two sibling directories. They do not start Docker, Hugo, or Ollama. Install the browser-reference extension only for the browser flow:
 
 ```bash
 cd ../htmltrust-browser-reference
@@ -102,10 +100,7 @@ npm run build:chromium
 cd ../htmltrust-e2e
 ```
 
-The explicit flag allows the pinned Git dependency to build its `dist/`
-directory when npm is configured globally to skip lifecycle scripts. The
-browser-reference lock file resolves the same browser-client revision used by
-the harness.
+The explicit flag allows the pinned Git dependency to build its `dist/` directory when npm is configured globally to skip lifecycle scripts.
 
 ## Run the small simulation
 
@@ -114,49 +109,46 @@ Start Ollama in another terminal and load the model configured in
 
 ```bash
 ollama serve
-ollama pull llama3.2:3b
+ollama pull llama3.2:1b
 ```
 
-From `htmltrust-e2e`, run the complete host-side simulation:
+From `htmltrust-e2e`, run the complete simulation:
 
 ```bash
-npm start -- scenario-small.yaml
+npm run e2e:small
 ```
 
-The orchestrator builds the Compose stack, publishes the test sites, runs the
-consumer and researcher phases, validates the results, and writes ignored
-output under `results/`, `hugo-sources/`, and `hugo-sites/`. It runs the Python
-analysis when `uv` is installed; that optional analysis does not decide the
-simulation exit status.
+The runner installs and builds the sibling browser packages, checks this repository, builds the Compose stack, publishes the test sites, and runs browser verification in the Playwright container. It writes ignored output under `results/`, `hugo-sources/`, and `hugo-sites/`. The stack stays up after the run so you can inspect logs.
 
 ## Run the full simulation
 
-The checked-in full scenario uses ten authors and 1,000 consumers. Copy it
-before changing the Ollama endpoint or model:
+The checked-in full scenario uses ten authors and 1,000 consumers. Copy it before changing the Ollama endpoint or model:
 
 ```bash
 cp scenario.yaml scenario-local.yaml
 # Edit scenario-local.yaml, including ollama.host or ollama.model.
-npm start -- scenario-local.yaml
+./scripts/run-e2e.sh scenario-local.yaml
 ```
 
-For a host-side run, use `http://localhost:11434` as the Ollama host. The
-checked-in full scenario uses `host.docker.internal` for Docker-oriented runs.
+Publication runs on the host, so use `http://localhost:11434` as the Ollama host. Browser verification runs inside Docker. The generated article URLs remain `https://authorN.htmltrust.test/...` on the Docker network.
 
 ## Run browser phases in Docker
 
-Use this flow when the host lacks a Playwright browser. Run it from this
-repository after completing the pinned sibling setup, `npm ci`, and the
-browser-reference Chromium build:
+Use this split flow when you want to inspect publication output before browser verification:
 
 ```bash
+npm run config:nginx -- scenario-small.yaml
 docker compose up -d --build --wait
 npx tsx src/smoke-test.ts scenario-small.yaml
-docker compose run --rm playwright npx tsx src/run-phases-3-5.ts scenario-small.yaml
+docker compose run --rm --entrypoint npx playwright tsx src/run-phases-3-5.ts scenario-small.yaml
 ```
 
-The smoke test creates `results/ground-truth.json`. The second command runs
-consumer browsing, researcher reports, post-report visits, and validation.
+Nginx writes no tracked source file. The generated configuration lives at
+`.runtime/nginx.conf`. It proxies article hosts and the test directory hostname
+`https://trust.htmltrust.test`, which lets the browser exercise the verifier's
+HTTPS-only key retrieval policy.
+
+The smoke test creates `results/ground-truth.json`. The second command runs consumer browsing, researcher reports, post-report visits, and validation. Chromium accepts the test-only wildcard certificate generated by `Dockerfile.nginx`.
 
 ## Run individual checks and services
 
@@ -194,11 +186,11 @@ Both scenarios are YAML files. Override local service settings for one run:
 HTMLTRUST_TRUST_SERVER_URL=http://localhost:3000 \
 HTMLTRUST_GENERAL_API_KEY=my-general-key \
 HTMLTRUST_ADMIN_API_KEY=my-admin-key \
-npm start -- scenario-small.yaml
+npm run e2e:small
 ```
 
 Compose also accepts `HTMLTRUST_TRUST_PORT`, `HTMLTRUST_PROXY_PORT`,
-`HTMLTRUST_DIRECTORY_BASE_URL`, `WP_DB_ROOT_PASSWORD`, `WP_DB_PASSWORD`,
+`HTMLTRUST_TLS_PROXY_PORT`, `HTMLTRUST_DIRECTORY_BASE_URL`, `WP_DB_ROOT_PASSWORD`, `WP_DB_PASSWORD`,
 `HTMLTRUST_GENERAL_API_KEY`, and `HTMLTRUST_ADMIN_API_KEY`. The checked-in
 credentials are for local testing only.
 
@@ -210,9 +202,10 @@ credentials are for local testing only.
   from `htmltrust-e2e`.
 - Hugo publication fails: confirm that `hugo version` works on the host.
 - Article generation fails: run `curl http://localhost:11434/api/tags`, pull
-  `llama3.2:3b`, and check that the scenario's Ollama host is reachable.
+  `llama3.2:1b`, and check that the scenario's Ollama host is reachable.
 - Browser phases cannot resolve author hosts: run them in the Playwright
   service with `docker compose run --rm playwright ...`.
+- HTTPS publication fails: confirm that port `18443` is free and inspect `docker compose logs nginx`.
 - A previous run left stale databases: use the cleanup command below.
 
 Inspect service state and logs:
@@ -241,3 +234,5 @@ with `docker compose up -d --build --wait`.
 - [`analysis/analyze.py`](analysis/analyze.py) analyzes simulation output.
 - [CI workflow](.github/workflows/ci.yml) records the currently tested package
   revisions.
+
+Open an issue with the failing phase, command output, scenario file, and `results/ground-truth.json`. Do not include API keys from a non-test deployment.

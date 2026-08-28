@@ -2,6 +2,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
+  buildSigningPayloadV1,
+  canonicalizeClaims,
   normalizeText,
 } from "@htmltrust/canonicalization";
 import { canonicalizeSignedContent } from "@htmltrust/browser-client";
@@ -42,30 +44,32 @@ export function computeContentHashFromHtml(html: string, baseUrl: string): strin
 
 /**
  * Compute the claims hash from the exact direct-child <meta> claim map.
- * The current draft serializes every normalized claim as `name:content\n`,
- * sorted by normalized claim name, and hashes the concatenated byte string.
+ * The frozen v1 profile serializes every normalized claim as an escaped
+ * `name:content\n` record, sorted by UTF-8 order, and hashes the result.
  */
 export function computeClaimsHash(claims: Record<string, string>): string {
-  const encoder = new TextEncoder();
-  const compareUtf8 = (a: string, b: string): number => {
-    const aa = encoder.encode(a);
-    const bb = encoder.encode(b);
-    const len = Math.min(aa.length, bb.length);
-    for (let i = 0; i < len; i++) {
-      if (aa[i] !== bb[i]) return aa[i] - bb[i];
-    }
-    return aa.length - bb.length;
-  };
-  const canonical = Object.entries(claims)
-    .map(([name, content]) => [normalizeText(name), normalizeText(String(content))] as const)
-    .sort(([a], [b]) => compareUtf8(a, b))
-    .map(([name, content]) => `${name}:${content}\n`)
-    .join("");
-  return hashCanonical(canonical);
+  return hashCanonical(canonicalizeClaims(claims));
+}
+
+/**
+ * Construct the frozen v1 RFC 8785 signing payload used by browser clients.
+ * Keeping this small wrapper in the harness gives publish fixtures one shared
+ * entry point while the Docker signer migrates from the compatibility API.
+ */
+export function buildV1SigningPayload(parts: {
+  contentHash: string;
+  claimsHash: string;
+  documentURL: string;
+  scope: "url" | "origin";
+  keyid: string;
+  algorithm: string;
+  signedAt: string;
+}): string {
+  return buildSigningPayloadV1(parts);
 }
 
 export function serializedOriginForDomain(domain: string): string {
-  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(domain) ? domain : `http://${domain}`;
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(domain) ? domain : `https://${domain}`;
   return new URL(candidate).origin;
 }
 
@@ -77,7 +81,32 @@ export function buildSignedClaims(author: string, signedAt: string, claims: Arti
   };
 }
 
+export function claimRecords(claims: Record<string, string>): Array<{ name: string; content: string }> {
+  return Object.entries(claims).map(([name, content]) => ({ name, content }));
+}
+
+export function v1Timestamp(now = new Date()): string {
+  return now.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function escapeAttribute(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function escapeText(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 function buildSignedSectionHtml(opts: {
+  profile: "htmltrust-signature-v1";
+  scope: "url" | "origin";
   signature: string;
   keyId: string;
   contentHash: string;
@@ -88,14 +117,14 @@ function buildSignedSectionHtml(opts: {
   innerContentHtml?: string;
 }): string {
   const metas = [
-    `<meta name="author" content="${opts.author}">`,
-    `<meta name="signed-at" content="${opts.signedAt}">`,
-    ...Object.entries(opts.claims).map(([k, v]) => `<meta name="claim:${k}" content="${v}">`),
+    `<meta name="author" content="${escapeAttribute(opts.author)}">`,
+    `<meta name="signed-at" content="${escapeAttribute(opts.signedAt)}">`,
+    ...Object.entries(opts.claims).map(([k, v]) => `<meta name="claim:${escapeAttribute(k)}" content="${escapeAttribute(v)}">`),
   ].join("\n  ");
 
   const inner = opts.innerContentHtml ? `\n  ${opts.innerContentHtml}\n` : "\n";
 
-  return `<signed-section signature="${opts.signature}" keyid="${opts.keyId}" algorithm="${opts.algorithm}" content-hash="${opts.contentHash}">
+  return `<signed-section profile="${opts.profile}" signature-scope="${opts.scope}" signature="${escapeAttribute(opts.signature)}" keyid="${escapeAttribute(opts.keyId)}" algorithm="${escapeAttribute(opts.algorithm)}" content-hash="${escapeAttribute(opts.contentHash)}">
   ${metas}${inner}</signed-section>`;
 }
 
@@ -135,14 +164,10 @@ export async function runPhase2(
         const slug = `article-${i + 1}`;
         let url: string;
 
-        // Compute the canonical binding fields per spec. The legacy `domain`
-        // API field carries the serialized Web origin, not a host-only name.
-        const signedAt = new Date().toISOString();
-        const publicationOrigin = serializedOriginForDomain(author.domain);
+        const signedAt = v1Timestamp();
         const signedClaims = buildSignedClaims(author.name, signedAt, declaredMeta);
-        const innerContentHtml = `<article><p>${content}</p></article>`;
-        const contentHash = computeContentHashFromHtml(innerContentHtml, publicationOrigin);
-        const claimsHash = computeClaimsHash(signedClaims);
+        const signedClaimRecords = claimRecords(signedClaims);
+        const innerContentHtml = `<article><p>${escapeText(content)}</p></article>`;
 
         if (author.cmsType === "wordpress") {
           // Ask the trust server to sign the binding.
@@ -159,11 +184,40 @@ export async function runPhase2(
           // buildSignedSectionHtml helper, if no other caller uses it) once a
           // full sim run confirms the plugin emits an equivalent
           // <signed-section>.
+          // Create a draft first so the signature can bind the final WordPress
+          // response URL. The draft body is replaced before publication.
+          const c = author.wpContainerName!;
+          const draftFile = `/tmp/post-${Date.now()}-${i}.html`;
+          await writeFileToContainer(e2eDir, c, draftFile, innerContentHtml);
+          const postIdStr = (await composeExec(e2eDir, c, [
+            "wp", "post", "create", draftFile,
+            `--post_title=${title}`,
+            "--post_status=draft",
+            "--post_type=post",
+            "--porcelain",
+            "--allow-root",
+          ])).trim();
+          await composeExec(e2eDir, c, ["rm", draftFile]);
+
+          const sourceURL = (await composeExec(e2eDir, c, [
+            "wp", "post", "url", postIdStr, "--allow-root",
+          ])).trim();
+          const parsedSourceURL = new URL(sourceURL);
+          if (parsedSourceURL.protocol !== "https:" || parsedSourceURL.host !== author.domain) {
+            throw new Error(`WordPress returned an unexpected final URL for post ${postIdStr}: ${sourceURL}`);
+          }
+          const contentHash = computeContentHashFromHtml(innerContentHtml, sourceURL);
+          const expectedClaimsHash = computeClaimsHash(signedClaims);
           const sigResult = await trustClient.signContent(author.authorApiKey, {
-            contentHash, claimsHash, signedAt,
-            domain: publicationOrigin,
-            claims: signedClaims,
+            contentHash,
+            sourceURL,
+            scope: "url",
+            signedAt,
+            claims: signedClaimRecords,
           });
+          if (sigResult.claimsHash !== expectedClaimsHash) {
+            throw new Error(`claims hash mismatch for ${sourceURL}: local=${expectedClaimsHash} directory=${sigResult.claimsHash}`);
+          }
 
           // Build the signed-section wrapper with the content nested inside.
           // Using the wrapped form (spec §2.1 example): the <signed-section>
@@ -171,6 +225,8 @@ export async function runPhase2(
           // it unambiguously.
           const keyId = sigResult.keyid;
           const signedSection = buildSignedSectionHtml({
+            profile: sigResult.profile,
+            scope: sigResult.scope,
             signature: sigResult.signature,
             keyId,
             contentHash,
@@ -180,26 +236,20 @@ export async function runPhase2(
             claims: declaredMeta,
             innerContentHtml,
           });
-
-          const postBody = signedSection;
-
-          // Write the post body to a temp file inside the WP container via spawn (stdin)
-          const c = author.wpContainerName!;
-          const tmpFile = `/tmp/post-${Date.now()}-${i}.html`;
-          await writeFileToContainer(e2eDir, c, tmpFile, postBody);
-
-          const postIdStr = (await composeExec(e2eDir, c, [
-            "wp", "post", "create", tmpFile,
-            `--post_title=${title}`,
+          await composeExec(e2eDir, c, [
+            "wp", "post", "update", postIdStr,
+            `--post_content=${signedSection}`,
             "--post_status=publish",
-            "--post_type=post",
-            "--porcelain",
             "--allow-root",
+          ]);
+          const publishedURL = (await composeExec(e2eDir, c, [
+            "wp", "post", "url", postIdStr, "--allow-root",
           ])).trim();
+          if (publishedURL !== sourceURL) {
+            throw new Error(`WordPress changed the signed URL after publication: signed=${sourceURL} published=${publishedURL}`);
+          }
 
-          await composeExec(e2eDir, c, ["rm", tmpFile]);
-
-          url = `http://${author.domain}/?p=${postIdStr}`;
+          url = sourceURL;
 
           const malCheck = tracker.checkMalicious(declaredMeta, actualMeta);
           tracker.addArticle({
@@ -213,7 +263,7 @@ export async function runPhase2(
           continue;
         } else {
           const artPath = await hugoPub!.addArticle({ slug, title, content, claims: declaredMeta as unknown as Record<string, string> });
-          url = `http://${author.domain}${artPath}`;
+          url = `https://${author.domain}${artPath}`;
         }
 
         const { isMalicious, reason } = tracker.checkMalicious(declaredMeta, actualMeta);
@@ -252,19 +302,24 @@ export async function runPhase2(
             continue;
           }
 
-          const signedAt = new Date().toISOString();
-          const publicationOrigin = serializedOriginForDomain(author.domain);
+          const signedAt = v1Timestamp();
           const signedClaims = buildSignedClaims(author.name, signedAt, article.declaredMetadata);
-          const innerContentHtml = `<article><p>${article.content}</p></article>`;
-          const contentHash = computeContentHashFromHtml(innerContentHtml, publicationOrigin);
-          const claimsHash = computeClaimsHash(signedClaims);
+          const signedClaimRecords = claimRecords(signedClaims);
+          const innerContentHtml = `<article><p>${escapeText(article.content)}</p></article>`;
+          const contentHash = computeContentHashFromHtml(innerContentHtml, article.url);
+          const expectedClaimsHash = computeClaimsHash(signedClaims);
 
           // Sign the canonical binding via the trust server
           const sig = await trustClient.signContent(author.authorApiKey, {
-            contentHash, claimsHash, signedAt,
-            domain: publicationOrigin,
-            claims: signedClaims,
+            contentHash,
+            sourceURL: article.url,
+            scope: "url",
+            signedAt,
+            claims: signedClaimRecords,
           });
+          if (sig.claimsHash !== expectedClaimsHash) {
+            throw new Error(`claims hash mismatch for ${article.url}: local=${expectedClaimsHash} directory=${sig.claimsHash}`);
+          }
 
           const keyId = sig.keyid;
 
@@ -272,6 +327,8 @@ export async function runPhase2(
           // We replace the Hugo-generated standalone signed-section with our
           // wrapped version.
           const newSignedSection = buildSignedSectionHtml({
+            profile: sig.profile,
+            scope: sig.scope,
             signature: sig.signature,
             keyId,
             contentHash,

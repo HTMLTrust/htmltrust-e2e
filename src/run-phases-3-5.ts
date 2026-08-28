@@ -51,11 +51,11 @@ async function main(): Promise<void> {
     throw new Error("No authors in ground-truth.json. Run Phases 1-2 first.");
   }
 
-  // Rewrite article URLs to use Docker-internal hostnames
-  // (Phases 1-2 used :8080 via host proxy; inside Docker we hit authorN.htmltrust.test directly on port 80)
+  // Article URLs use Docker-internal author hostnames and HTTPS. Strip only
+  // an accidental host proxy port from an older saved manifest.
   const articles = manifest.articles.map((a) => ({
     ...a,
-    url: a.url.replace(/:8080\//, "/").replace(/localhost/g, new URL(a.url).hostname || ""),
+    url: a.url.replace(/:(?:8080|8443|18080|18443)\//, "/").replace(/localhost/g, new URL(a.url).hostname || ""),
   })) as unknown as Array<{ id: string; authorId: string; title: string; content: string; url: string; declaredMetadata: { ContentType: string; License: string; AIAssistance: "None" | "Human+AI" | "AI-only" }; actualMetadata: { ContentType: string; License: string; AIAssistance: "None" | "Human+AI" | "AI-only" }; isMalicious: boolean; maliciousReason?: string; contentHash?: string; signature?: string }>;
 
   console.log(`Loaded ${authors.length} authors, ${articles.length} articles`);

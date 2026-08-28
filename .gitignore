@@ -1,6 +1,8 @@
 node_modules/
 dist/
 results/
+output/
 hugo-sites/
 hugo-sources/
+.runtime/
 .superpowers/
