@@ -16,7 +16,7 @@ volumes:
 services:
 
   mongodb:
-    image: mongo:7
+    image: mongo:7@sha256:b6421fd6d1c5ded6377b397d8983e2f82e2100dc5123332dcfda2065a472be5b
     networks:
       - htmltrust
     volumes:
@@ -28,7 +28,7 @@ services:
       retries: 5
       start_period: 20s
 
-  trust-server:
+  trust-directory-alpha:
     build:
       context: ..
       dockerfile: htmltrust-e2e/Dockerfile.trust-server
@@ -38,26 +38,59 @@ services:
       mongodb:
         condition: service_healthy
     environment:
-      MONGO_URI: mongodb://mongodb:27017/htmltrust
+      MONGO_URI: mongodb://mongodb:27017/htmltrust_alpha
       # Overridable per run, e.g.
-      #   HTMLTRUST_GENERAL_API_KEY=$(openssl rand -hex 24) \
-      #   HTMLTRUST_ADMIN_API_KEY=$(openssl rand -hex 24) docker compose up
+      #   HTMLTRUST_DIRECTORY_ALPHA_GENERAL_API_KEY=$(openssl rand -hex 24) \
+      #   HTMLTRUST_DIRECTORY_ALPHA_ADMIN_API_KEY=$(openssl rand -hex 24) docker compose up
       # (or the same two lines in htmltrust-e2e/.env, which compose reads).
       #
       # Scenario loading applies the same environment variables, so callers can
       # replace the checked-in simulation credentials for a run.
-      GENERAL_API_KEY: ${HTMLTRUST_GENERAL_API_KEY:-sim_general_key}
-      ADMIN_API_KEY: ${HTMLTRUST_ADMIN_API_KEY:-sim_admin_key}
-      AUTHOR_API_KEY_PEPPER: ${HTMLTRUST_AUTHOR_API_KEY_PEPPER:-sim_author_api_key_pepper}
+      GENERAL_API_KEY: ${HTMLTRUST_DIRECTORY_ALPHA_GENERAL_API_KEY:-sim_general_key}
+      ADMIN_API_KEY: ${HTMLTRUST_DIRECTORY_ALPHA_ADMIN_API_KEY:-sim_admin_key}
+      AUTHOR_API_KEY_PEPPER: ${HTMLTRUST_DIRECTORY_ALPHA_AUTHOR_API_KEY_PEPPER:-sim_author_api_key_pepper}
       # Signed key URLs must be reachable by a production-policy verifier,
       # which accepts HTTPS only. Nginx proxies this test hostname internally.
-      DIRECTORY_BASE_URL: ${HTMLTRUST_DIRECTORY_BASE_URL:-https://trust.htmltrust.test}
+      DIRECTORY_BASE_URL: ${HTMLTRUST_DIRECTORY_ALPHA_PUBLIC_URL:-https://trust-a.htmltrust.test}
+      # The Playwright phase represents 1,000 independent consumers from one
+      # tools-container IP. Keep the limiters active with simulation-scale
+      # ceilings; the server repository's production defaults remain 600
+      # total and 60 writes per IP each minute.
+      RATE_LIMIT_GLOBAL: ${HTMLTRUST_E2E_RATE_LIMIT_GLOBAL:-20000}
+      RATE_LIMIT_WRITE: ${HTMLTRUST_E2E_RATE_LIMIT_WRITE:-10000}
       PORT: "3000"
     ports:
       # Loopback only. "3000:3000" publishes on 0.0.0.0, exposing the trust
       # directory API -- including the admin key's endpoints -- to anything
       # that can reach this machine.
-      - "127.0.0.1:${HTMLTRUST_TRUST_PORT:-3000}:3000"
+      - "127.0.0.1:${HTMLTRUST_DIRECTORY_ALPHA_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  trust-directory-beta:
+    build:
+      context: ..
+      dockerfile: htmltrust-e2e/Dockerfile.trust-server
+    networks:
+      - htmltrust
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/htmltrust_beta
+      GENERAL_API_KEY: ${HTMLTRUST_DIRECTORY_BETA_GENERAL_API_KEY:-sim_general_key}
+      ADMIN_API_KEY: ${HTMLTRUST_DIRECTORY_BETA_ADMIN_API_KEY:-sim_admin_key}
+      AUTHOR_API_KEY_PEPPER: ${HTMLTRUST_DIRECTORY_BETA_AUTHOR_API_KEY_PEPPER:-sim_beta_author_api_key_pepper}
+      DIRECTORY_BASE_URL: ${HTMLTRUST_DIRECTORY_BETA_PUBLIC_URL:-https://trust-b.htmltrust.test}
+      RATE_LIMIT_GLOBAL: ${HTMLTRUST_E2E_RATE_LIMIT_GLOBAL:-20000}
+      RATE_LIMIT_WRITE: ${HTMLTRUST_E2E_RATE_LIMIT_WRITE:-10000}
+      PORT: "3000"
+    ports:
+      - "127.0.0.1:${HTMLTRUST_DIRECTORY_BETA_PORT:-3001}:3000"
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
       interval: 10s
@@ -66,7 +99,7 @@ services:
       start_period: 15s
 
   wp-db:
-    image: mariadb:11
+    image: mariadb:11@sha256:2439dcd7d14010ecd1ff7a4e1c5abe8e208c34fe35290744deeeaac3569043c3
     networks:
       - htmltrust
     volumes:
@@ -92,8 +125,8 @@ services:
 
   wp-1:
     build:
-      context: .
-      dockerfile: Dockerfile.wordpress
+      context: ..
+      dockerfile: htmltrust-e2e/Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:
@@ -106,12 +139,17 @@ services:
       WORDPRESS_DB_NAME: wp1
     volumes:
       - wp-1-data:/var/www/html
-      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+    healthcheck:
+      test: ["CMD", "php", "-r", "$$headers=@get_headers('http://127.0.0.1/'); exit(is_array($$headers) && count($$headers) > 0 ? 0 : 1);"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   wp-2:
     build:
-      context: .
-      dockerfile: Dockerfile.wordpress
+      context: ..
+      dockerfile: htmltrust-e2e/Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:
@@ -124,12 +162,17 @@ services:
       WORDPRESS_DB_NAME: wp2
     volumes:
       - wp-2-data:/var/www/html
-      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+    healthcheck:
+      test: ["CMD", "php", "-r", "$$headers=@get_headers('http://127.0.0.1/'); exit(is_array($$headers) && count($$headers) > 0 ? 0 : 1);"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   wp-3:
     build:
-      context: .
-      dockerfile: Dockerfile.wordpress
+      context: ..
+      dockerfile: htmltrust-e2e/Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:
@@ -142,12 +185,17 @@ services:
       WORDPRESS_DB_NAME: wp3
     volumes:
       - wp-3-data:/var/www/html
-      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+    healthcheck:
+      test: ["CMD", "php", "-r", "$$headers=@get_headers('http://127.0.0.1/'); exit(is_array($$headers) && count($$headers) > 0 ? 0 : 1);"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   wp-4:
     build:
-      context: .
-      dockerfile: Dockerfile.wordpress
+      context: ..
+      dockerfile: htmltrust-e2e/Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:
@@ -160,12 +208,17 @@ services:
       WORDPRESS_DB_NAME: wp4
     volumes:
       - wp-4-data:/var/www/html
-      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+    healthcheck:
+      test: ["CMD", "php", "-r", "$$headers=@get_headers('http://127.0.0.1/'); exit(is_array($$headers) && count($$headers) > 0 ? 0 : 1);"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   wp-5:
     build:
-      context: .
-      dockerfile: Dockerfile.wordpress
+      context: ..
+      dockerfile: htmltrust-e2e/Dockerfile.wordpress
     networks:
       - htmltrust
     depends_on:
@@ -178,13 +231,19 @@ services:
       WORDPRESS_DB_NAME: wp5
     volumes:
       - wp-5-data:/var/www/html
-      - ../htmltrust-cms-reference/wordpress:/var/www/html/wp-content/plugins/content-signing
+    healthcheck:
+      test: ["CMD", "php", "-r", "$$headers=@get_headers('http://127.0.0.1/'); exit(is_array($$headers) && count($$headers) > 0 ? 0 : 1);"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   # Playwright container: runs on demand via `docker compose run playwright`
   # Resolves *.htmltrust.test via Docker DNS, no host state needed
   playwright:
-    image: mcr.microsoft.com/playwright:v1.59.1-jammy
+    image: mcr.microsoft.com/playwright:v1.59.1-jammy@sha256:8a0360d39d1973be506dd59002904a774f6d697d4946c94063b3fd006461c8ff
     working_dir: /workspace
+    user: "${HTMLTRUST_HOST_UID:-1000}:${HTMLTRUST_HOST_GID:-1000}"
     volumes:
       - .:/workspace
       - ../htmltrust-browser-reference/build/chromium:/extension:ro
@@ -197,6 +256,7 @@ services:
     environment:
       E2E_DIR: /workspace
       EXTENSION_PATH: /extension
+      HOME: /tmp/htmltrust-home
       NPM_CONFIG_CACHE: /tmp/.npm
     # Override default command so the container stays idle; we launch scripts via `docker compose run`
     entrypoint: ["sleep", "infinity"]
@@ -219,14 +279,29 @@ services:
           - author8.htmltrust.test
           - author9.htmltrust.test
           - author10.htmltrust.test
-          - trust.htmltrust.test
+          - trust-a.htmltrust.test
+          - trust-b.htmltrust.test
     depends_on:
-      - trust-server
-      - wp-1
-      - wp-2
-      - wp-3
-      - wp-4
-      - wp-5
+      trust-directory-alpha:
+        condition: service_healthy
+      trust-directory-beta:
+        condition: service_healthy
+      wp-1:
+        condition: service_healthy
+      wp-2:
+        condition: service_healthy
+      wp-3:
+        condition: service_healthy
+      wp-4:
+        condition: service_healthy
+      wp-5:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     ports:
       # Loopback only. This fronts five WordPress installs whose admin
       # credentials are fixed sim values; publishing these ports to the whole

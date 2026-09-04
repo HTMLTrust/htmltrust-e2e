@@ -1,8 +1,21 @@
 #!/usr/bin/env python3
-"""Analyze HTMLTrust E2E simulation results."""
-import json, sys
-from pathlib import Path
 from collections import defaultdict
+import json
+from pathlib import Path
+import sys
+
+
+def format_directory_reputation(entries: list[dict]) -> str:
+    """Format the independent score reported by each configured directory."""
+    formatted = []
+    for entry in entries:
+        score = entry["trustScore"]
+        bar = "#" * int(score * 20)
+        formatted.append(
+            f"{entry['directoryId']}={score:.3f} {bar} "
+            f"(weight={entry['weight']:.2f}, reports={entry['reports']})"
+        )
+    return "; ".join(formatted)
 
 def main(results_dir: Path) -> None:
     data = json.loads((results_dir / "data.json").read_text())
@@ -10,12 +23,12 @@ def main(results_dir: Path) -> None:
     gt = json.loads((results_dir / "ground-truth.json").read_text())
 
     print("\n" + "=" * 60)
-    print("  Trust Score Distribution")
+    print("  Directory Reputation Distribution")
     print("=" * 60)
     for a in data["authorSummary"]:
-        bar = "#" * int(a["trustScore"] * 40)
         mal = f" [MAL {a['maliciousPct']*100:.0f}%]" if a["maliciousPct"] > 0 else ""
-        print(f"  {a['name']:15s} ({a['cmsType']:9s}) {a['trustScore']:.3f} {bar}{mal}")
+        reputation = format_directory_reputation(a["directoryReputation"])
+        print(f"  {a['name']:15s} ({a['cmsType']:9s}) {reputation}{mal}")
 
     det = data["detectionStats"]
     print(f"\n{'='*60}\n  Detection: P={det['precision']*100:.1f}% R={det['recall']*100:.1f}% TP={det['tp']} FP={det['fp']} FN={det['fn']}\n{'='*60}")

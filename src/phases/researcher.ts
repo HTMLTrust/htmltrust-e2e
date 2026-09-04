@@ -2,7 +2,12 @@ import { TrustApiClient } from "../lib/trust-api.js";
 import type { ScenarioConfig, AuthorProfile, Article, PhaseResult } from "../types.js";
 
 export interface ResearcherReport {
-  articleId: string; authorId: string; reportId: string; reason: string; isTruePositive: boolean;
+  articleId: string;
+  authorId: string;
+  directoryId: string;
+  reportId: string;
+  reason: string;
+  isTruePositive: boolean;
 }
 
 export async function runPhase35(
@@ -14,11 +19,22 @@ export async function runPhase35(
 
   if (!config.researcher.enabled) return { result: { phase: "researcher", success: true, duration: 0, errors: [] }, reports };
 
-  const client = new TrustApiClient(config.trust_server.url, config.trust_server.general_api_key, config.trust_server.admin_api_key);
+  const reportingDirectories = config.trust_directories.filter((directory) => directory.reports);
+  const clients = new Map(reportingDirectories.map((directory) => [
+    directory.id,
+    new TrustApiClient(directory.url, directory.general_api_key, directory.admin_api_key),
+  ]));
 
   const preScores: Record<string, number> = {};
-  for (const a of authors) {
-    if (a.keyId) preScores[a.id] = (await client.getKeyReputation(a.keyId)).trustScore;
+  for (const directory of reportingDirectories) {
+    const client = clients.get(directory.id)!;
+    for (const author of authors) {
+      try {
+        preScores[`${directory.id}:${author.id}`] = (await client.getSignerReputation(author.keyId)).score;
+      } catch {
+        preScores[`${directory.id}:${author.id}`] = 0.5;
+      }
+    }
   }
 
   console.log("[Phase 3.5] Researcher crawling...");
@@ -28,27 +44,50 @@ export async function runPhase35(
   for (const article of malicious) {
     const author = authors.find((a) => a.id === article.authorId);
     if (!author) continue;
-    try {
-      const r = await client.reportKey(author.keyId, {
-        reason: "MISINFORMATION",
-        details: `"${article.title}": ${article.maliciousReason}`,
-        evidence: article.url,
-      });
-      reports.push({ articleId: article.id, authorId: author.id, reportId: r.reportId, reason: article.maliciousReason || "", isTruePositive: true });
-      console.log(`  Reported: ${article.title}`);
-    } catch (err) {
-      errors.push(`Report failed for ${article.id}: ${err}`);
+    for (const directory of reportingDirectories) {
+      try {
+        const identity = author.directoryIdentities[directory.id];
+        const reportData = {
+          reason: "MISINFORMATION",
+          details: `"${article.title}": ${article.maliciousReason}`,
+          evidence: article.url,
+        };
+        const r = identity.keyRecordId
+          ? await clients.get(directory.id)!.reportKey(identity.keyRecordId, reportData)
+          : await clients.get(directory.id)!.reportSigner(author.keyId, reportData);
+        reports.push({
+          articleId: article.id,
+          authorId: author.id,
+          directoryId: directory.id,
+          reportId: r.reportId,
+          reason: article.maliciousReason || "",
+          isTruePositive: true,
+        });
+        console.log(`  Reported in ${directory.id}: ${article.title}`);
+      } catch (err) {
+        errors.push(`Report failed for ${article.id} in ${directory.id}: ${err}`);
+      }
     }
   }
 
-  for (const a of authors) {
-    if (!a.keyId) continue;
-    const post = (await client.getKeyReputation(a.keyId)).trustScore;
-    const wasReported = reports.some((r) => r.authorId === a.id);
-    if (wasReported && post >= (preScores[a.id] ?? 0) && malicious.some((m) => m.authorId === a.id))
-      errors.push(`${a.name}: score did not decrease after reports`);
-    if (!wasReported && a.malicious_pct === 0 && post < (preScores[a.id] ?? 0))
-      errors.push(`${a.name}: honest author score decreased`);
+  for (const directory of reportingDirectories) {
+    const client = clients.get(directory.id)!;
+    for (const author of authors) {
+      let post = 0.5;
+      try {
+        post = (await client.getSignerReputation(author.keyId)).score;
+      } catch {
+        // A directory with no local opinion contributes the neutral baseline.
+      }
+      const wasReported = reports.some((report) => report.authorId === author.id && report.directoryId === directory.id);
+      const pre = preScores[`${directory.id}:${author.id}`] ?? 0;
+      if (wasReported && post >= pre && malicious.some((article) => article.authorId === author.id)) {
+        errors.push(`${author.name}: score did not decrease after reports in ${directory.id}`);
+      }
+      if (!wasReported && author.malicious_pct === 0 && post < pre) {
+        errors.push(`${author.name}: honest author score decreased in ${directory.id}`);
+      }
+    }
   }
 
   return { result: { phase: "researcher", success: errors.length === 0, duration: Date.now() - start, errors }, reports };

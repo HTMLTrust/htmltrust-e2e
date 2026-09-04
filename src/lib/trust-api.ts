@@ -5,15 +5,14 @@ import type { CreateAuthorResponse, SignContentResponse, KeyReputationResponse, 
  *
  * Historically called "trust server" in this codebase; the spec terminology
  * is "trust directory" (a federated convenience registry per §2.4). The
- * class name is kept generic — `TrustApiClient` — because the same
+ * generic `TrustApiClient` name reflects that the same
  * surface covers author creation, content signing, voting, key reputation,
  * and reporting.
  */
 export class TrustApiClient {
   /**
-   * @param baseUrl Trust directory base URL (e.g. `http://trust-server:3000`).
-   *                Despite the legacy hostname, this is treated as a single
-   *                trust directory in the new multi-directory model.
+   * @param baseUrl Trust directory base URL, for example
+   *                `http://trust-directory-alpha:3000`.
    */
   constructor(private baseUrl: string, private generalApiKey: string, private adminApiKey: string) {}
 
@@ -30,7 +29,14 @@ export class TrustApiClient {
     return res.json() as Promise<T>;
   }
 
-  async createAuthor(data: { name: string; keyType: string; description?: string; url?: string; keyAlgorithm?: string }): Promise<CreateAuthorResponse> {
+  async createAuthor(data: {
+    name: string;
+    keyType: string;
+    description?: string;
+    url?: string;
+    keyAlgorithm?: string;
+    publicKey?: string;
+  }): Promise<CreateAuthorResponse> {
     return this.request("/api/authors", { method: "POST", headers: { "X-API-KEY": this.generalApiKey }, body: data });
   }
 
@@ -77,12 +83,40 @@ export class TrustApiClient {
     return this.request("/api/votes", { method: "POST", headers: { "X-API-KEY": this.generalApiKey }, body: data });
   }
 
+  async voteSigner(data: { signerId: string; voteType: VoteType; reason?: string }): Promise<unknown> {
+    return this.request("/api/directory/signer-votes", {
+      method: "POST",
+      headers: { "X-API-KEY": this.generalApiKey },
+      body: data,
+    });
+  }
+
   async getKeyReputation(keyId: string): Promise<KeyReputationResponse> {
     return this.request(`/api/directory/keys/${keyId}/reputation`, { method: "GET" });
   }
 
+  async getSignerReputation(signerId: string): Promise<{
+    keyid: string;
+    score: number;
+    reports: number;
+    verifiedSignatures: number;
+    asOf: string;
+    components: string[];
+    methodology: string;
+  }> {
+    return this.request(`/signers/${encodeURIComponent(signerId)}/reputation`, { method: "GET" });
+  }
+
   async reportKey(keyId: string, data: { reason: string; details: string; evidence: string }): Promise<{ reportId: string; status: string }> {
     return this.request(`/api/directory/keys/${keyId}/report`, { method: "POST", headers: { "X-API-KEY": this.generalApiKey }, body: data });
+  }
+
+  async reportSigner(signerId: string, data: { reason: string; details: string; evidence: string }): Promise<{ reportId: string; status: string }> {
+    return this.request("/api/directory/signer-reports", {
+      method: "POST",
+      headers: { "X-API-KEY": this.generalApiKey },
+      body: { signerId, ...data },
+    });
   }
 
   async reportContent(data: { contentHash: string; sourceUrl: string; targetUrl: string; reason: string; details?: string }): Promise<{ reportId: string; status: string }> {

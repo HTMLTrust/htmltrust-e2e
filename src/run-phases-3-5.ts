@@ -2,7 +2,7 @@
  * Runs Phases 3, 3.5, 4, and 5 against a running Docker stack.
  * Designed to be executed INSIDE the playwright container, which has:
  *  - Browser binaries preinstalled
- *  - Docker network access to trust-server, nginx, author*.htmltrust.test
+ *  - Docker network access to both trust directories, nginx, and author hosts
  *  - /workspace mounted to the e2e project dir
  *
  * Prerequisites:
@@ -32,12 +32,13 @@ async function main(): Promise<void> {
 
   const config = await loadScenario(scenarioPath);
 
-  // Override trust directory URL for in-container execution (use Docker DNS)
-  const trustServerUrl = "http://trust-server:3000";
-  // Trust directory list — currently a single entry. Multi-directory
-  // simulation will populate this from scenario YAML in a follow-up.
-  const trustDirectoryUrls = [trustServerUrl];
-  console.log(`Using trust directory: ${trustServerUrl}\n`);
+  // Use Docker-network API URLs for server-side calls while preserving each
+  // HTTPS public URL for browser policy queries and signed key identifiers.
+  config.trust_directories = config.trust_directories.map((directory) => ({
+    ...directory,
+    url: directory.container_url,
+  }));
+  console.log(`Using trust directories: ${config.trust_directories.map((directory) => directory.id).join(", ")}\n`);
 
   // Load ground truth from Phases 1-2
   const gtPath = path.join(E2E_DIR, "results/ground-truth.json");
@@ -61,9 +62,6 @@ async function main(): Promise<void> {
   console.log(`Loaded ${authors.length} authors, ${articles.length} articles`);
   console.log(`  Authors: ${authors.map((a) => `${a.name}(${a.cmsType})`).join(", ")}`);
 
-  // Also override the scenario's trust server URL for any internal calls
-  config.trust_server.url = trustServerUrl;
-
   // Generate consumer profiles deterministically
   const consumers = generateConsumerProfiles(config, authors);
   console.log(`Generated ${consumers.length} consumer profiles`);
@@ -73,7 +71,7 @@ async function main(): Promise<void> {
   // --- Phase 3: Consumer Browsing ---
   console.log("\n=== Phase 3: Consumer Browsing ===");
   const { result: p3, sessionLogs } = await runPhase3(
-    config, authors, articles, consumers, trustDirectoryUrls, E2E_DIR
+    config, authors, articles, consumers, config.trust_directories, E2E_DIR
   );
   results.push(p3);
   console.log(`Phase 3: ${p3.success ? "PASS" : "FAIL"} (${(p3.duration / 1000).toFixed(1)}s)`);
@@ -95,7 +93,7 @@ async function main(): Promise<void> {
   // --- Phase 4: Post-Report Re-visit ---
   console.log("\n=== Phase 4: Post-Report Consumer Pass ===");
   const { result: p4, sessionLogs: postLogs } = await runPhase4(
-    config, authors, articles, consumers, sessionLogs, reports, trustDirectoryUrls, E2E_DIR
+    config, authors, articles, consumers, sessionLogs, reports, config.trust_directories, E2E_DIR
   );
   results.push(p4);
   console.log(`Phase 4: ${p4.success ? "PASS" : "FAIL"} (${(p4.duration / 1000).toFixed(1)}s) -- ${postLogs.length} sessions`);

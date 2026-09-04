@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chromium, type Page } from "playwright";
+import { chromium, firefox, webkit, type BrowserType, type Page } from "playwright";
 import { collectPageSectionIdentities, DOM_SCRIPT_BODY } from "../src/lib/playwright-session.js";
 
 const expression = `(async () => { ${DOM_SCRIPT_BODY} })()`;
@@ -27,8 +27,26 @@ async function runWalker(page: Page, html: string, sections: string[]): Promise<
   return await page.evaluate(expression) as unknown[];
 }
 
-async function main(): Promise<void> {
-  const browser = await chromium.launch({ headless: true });
+type BrowserEngine = "chromium" | "firefox" | "webkit";
+
+const browserTypes: Record<BrowserEngine, BrowserType> = { chromium, firefox, webkit };
+
+function requestedEngines(): BrowserEngine[] {
+  const value = process.env.HTMLTRUST_BROWSERS?.trim();
+  if (!value) return ["chromium", "firefox", "webkit"];
+  const engines = value.split(",").map((name) => name.trim()).filter(Boolean);
+  if (engines.length === 0 || engines.some((name) => !Object.hasOwn(browserTypes, name))) {
+    throw new Error("HTMLTRUST_BROWSERS must contain chromium, firefox, and/or webkit");
+  }
+  return engines as BrowserEngine[];
+}
+
+// Keep the fixture and assertions shared: changing only the Playwright engine
+// proves that the production page-context verifier/lifecycle code runs in
+// each engine. The Chromium extension is an optional packaging layer and is
+// not required for this source/rendered lifecycle contract.
+async function runLifecycleChecks(engine: BrowserEngine): Promise<void> {
+  const browser = await browserTypes[engine].launch({ headless: true });
   const page = await browser.newPage();
   const calls: ScoreInput[] = [];
   await page.exposeFunction("__htmltrustVerifyAndScore", async (input: ScoreInput) => {
@@ -86,7 +104,10 @@ async function main(): Promise<void> {
     calls.length = 0;
     await runWalker(page, mutable, [mutable]);
     await page.locator("signed-section").evaluate((section) => { section.textContent = "after"; });
-    await page.waitForTimeout(0);
+    await page.locator(".cs-verification-badges").waitFor({ state: "attached" });
+    await page.waitForFunction(() =>
+      document.querySelector(".cs-verification-badges")?.getAttribute("data-verification-state") === "stale",
+    );
     assert.equal(await page.locator(".cs-verification-badges").getAttribute("data-verification-state"), "stale");
     assert.equal(await page.locator(".cs-validity-badge").textContent(), "⚠ Rendered content INVALID (source differs)");
     assert.equal(calls.length, 1);
@@ -98,6 +119,9 @@ async function main(): Promise<void> {
     await navigate(page, first);
     await runWalker(page, first, [first]);
     await navigate(page, second);
+    assert.equal(await page.evaluate(() =>
+      (window as unknown as { __htmltrustSourceSnapshot?: unknown }).__htmltrustSourceSnapshot,
+    ), undefined);
     calls.length = 0;
     const reloadResult = await runWalker(page, second, [second]);
     assert.equal(calls.length, 1);
@@ -111,5 +135,13 @@ async function main(): Promise<void> {
   }
 }
 
+async function main(): Promise<void> {
+  const engines = requestedEngines();
+  for (const engine of engines) {
+    await runLifecycleChecks(engine);
+    console.log(`${engine} browser lifecycle checks passed`);
+  }
+  console.log(`browser lifecycle checks passed (${engines.join(", ")})`);
+}
+
 await main();
-console.log("browser lifecycle checks passed");

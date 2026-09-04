@@ -7,12 +7,14 @@ import path from "node:path";
 import * as http from "node:http";
 import * as https from "node:https";
 import { fileURLToPath } from "node:url";
-import { loadScenario, generateAuthorProfiles } from "./lib/scenario.js";
+import { loadScenario, generateAuthorProfiles, publisherDirectory } from "./lib/scenario.js";
 import { TrustApiClient } from "./lib/trust-api.js";
 import { GroundTruthTracker } from "./lib/ground-truth.js";
 import { composeExec } from "./lib/docker.js";
 import { generateNginxConfig } from "./lib/nginx-config.js";
+import { createLocalSigner } from "./lib/local-signing.js";
 import { runPhase2 } from "./phases/publish.js";
+import { prepareWordPressLocalSigningFixture } from "./wordpress-local-signing-fixture.js";
 
 async function rawHttpGet(
   proxyProtocol: "http:" | "https:",
@@ -59,6 +61,20 @@ async function rawHttpGet(
   });
 }
 
+async function waitForWordPress(e2eDir: string, container: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    try {
+      await composeExec(e2eDir, container, ["php", "-r", "echo 'ready';"]);
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+  throw new Error(`WordPress container ${container} did not become ready within 60 seconds: ${lastError}`);
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const E2E_DIR = path.resolve(__dirname, "..");
 
@@ -76,7 +92,7 @@ async function main(): Promise<void> {
   // fails, fall back to restarting the container, which is slower but
   // always works.
   console.log("=== Regenerating nginx.conf ===");
-  await generateNginxConfig(authors, path.join(E2E_DIR, ".runtime", "nginx.conf"));
+  await generateNginxConfig(authors, config.trust_directories, path.join(E2E_DIR, ".runtime", "nginx.conf"));
 
   let reloaded = false;
   for (let attempt = 0; attempt < 5 && !reloaded; attempt++) {
@@ -97,50 +113,87 @@ async function main(): Promise<void> {
   }
   console.log("  nginx ready\n");
 
-  const client = new TrustApiClient(
-    config.trust_server.url,
-    config.trust_server.general_api_key,
-    config.trust_server.admin_api_key
-  );
+  const publisher = publisherDirectory(config);
+  const clients = new Map(config.trust_directories.map((directory) => [
+    directory.id,
+    new TrustApiClient(directory.url, directory.general_api_key, directory.admin_api_key),
+  ]));
+  const publisherClient = clients.get(publisher.id)!;
 
   // --- Phase 1 (manual, since Docker is already running) ---
   console.log("=== Phase 1: Setup ===");
 
   // Create claim types
-  for (const claim of [
-    { name: "ContentType", description: "Type of content", possibleValues: ["Article", "Opinion", "News"] },
-    { name: "License", description: "Content license", possibleValues: ["MIT", "CC-BY-4.0", "All Rights Reserved"] },
-    { name: "AIAssistance", description: "AI involvement", possibleValues: ["None", "Human+AI", "AI-only"] },
-  ]) {
-    try { await client.createClaimType(claim); } catch { /* may already exist */ }
+  for (const client of clients.values()) {
+    for (const claim of [
+      { name: "ContentType", description: "Type of content", possibleValues: ["Article", "Opinion", "News"] },
+      { name: "License", description: "Content license", possibleValues: ["MIT", "CC-BY-4.0", "All Rights Reserved"] },
+      { name: "AIAssistance", description: "AI involvement", possibleValues: ["None", "Human+AI", "AI-only"] },
+    ]) {
+      try { await client.createClaimType(claim); } catch { /* may already exist */ }
+    }
   }
   console.log("  Claim types created");
 
   // Create authors
   for (const author of authors) {
-    const result = await client.createAuthor({
+    const publicKey = createLocalSigner(author.id);
+    const result = await publisherClient.createAuthor({
       name: author.name,
       keyType: "HUMAN",
       keyAlgorithm: "ED25519",
       description: `${author.cmsType} author`,
       url: `https://${author.domain}`,
+      publicKey,
     });
-    author.id = result.author.id;
-    author.authorApiKey = result.authorApiKey;
-    const pubKey = await client.getAuthorPublicKey(author.id);
-    author.keyId = pubKey.id;
-    console.log(`  ${author.name} (${author.cmsType}, mal=${author.malicious_pct}) -> ${author.id}`);
+    const pubKey = await publisherClient.getAuthorPublicKey(result.author.id);
+    author.keyId = `${publisher.public_url.replace(/\/$/, "")}/keys/${encodeURIComponent(pubKey.id)}`;
+    author.directoryIdentities[publisher.id] = {
+      signerId: author.keyId,
+      authorId: result.author.id,
+      keyRecordId: pubKey.id,
+    };
+    try {
+      await publisherClient.signContent(result.authorApiKey, {
+        contentHash: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        sourceURL: `https://${author.domain}/custody-check`,
+        scope: "url",
+        signedAt: "2026-08-28T12:00:00Z",
+        claims: [],
+      });
+      throw new Error(`${author.name}: directory unexpectedly retained a private key`);
+    } catch (error) {
+      if (!String(error).includes("400")) throw error;
+    }
+    for (const directory of config.trust_directories) {
+      author.directoryIdentities[directory.id] ??= { signerId: author.keyId };
+    }
+    console.log(`  ${author.name} (${author.cmsType}, mal=${author.malicious_pct}) -> ${author.keyId}`);
+  }
+
+  for (const directory of config.trust_directories) {
+    if (directory.publisher || directory.initial_opinion !== "challenge") continue;
+    await clients.get(directory.id)!.voteSigner({
+      signerId: authors[0].keyId,
+      voteType: "DISTRUST",
+      reason: "federation-challenge",
+    });
+    await clients.get(directory.id)!.reportSigner(authors[0].keyId, {
+      reason: "OTHER",
+      details: "Deterministic conflicting opinion for the federation scenario",
+      evidence: `https://${authors[0].domain}/`,
+    });
   }
 
   // Create WP databases + install
   const wpAuthors = authors.filter((a) => a.cmsType === "wordpress");
+  const wpSetupErrors: string[] = [];
   for (let i = 0; i < wpAuthors.length; i++) {
     try {
       const rootPassword = process.env.WP_DB_ROOT_PASSWORD || "rootpass";
       await composeExec(E2E_DIR, "wp-db", ["mariadb", "-uroot", `-p${rootPassword}`, "-e", `CREATE DATABASE IF NOT EXISTS wp${i + 1};`]);
       const c = wpAuthors[i].wpContainerName!;
-      // Wait a bit for WP to be ready
-      await new Promise((r) => setTimeout(r, 3000));
+      await waitForWordPress(E2E_DIR, c);
       await composeExec(E2E_DIR, c, [
         "wp", "core", "install",
         `--url=https://${wpAuthors[i].domain}`,
@@ -150,19 +203,28 @@ async function main(): Promise<void> {
         "--skip-email", "--allow-root",
       ]);
       await composeExec(E2E_DIR, c, ["wp", "option", "update", "permalink_structure", "", "--allow-root"]);
-      const appPw = (await composeExec(E2E_DIR, c, [
-        "wp", "user", "application-password", "create", "admin", "e2e-sim", "--porcelain", "--allow-root",
-      ])).trim();
-      wpAuthors[i].wpAppPassword = appPw;
-      console.log(`  Installed ${c} (app password: ${appPw.slice(0, 8)}...)`);
+      console.log(`  Installed ${c}`);
     } catch (err) {
+      wpSetupErrors.push(`${wpAuthors[i].name}: ${err}`);
       console.error(`  WP setup failed for ${wpAuthors[i].name}:`, err);
     }
   }
 
+  if (wpSetupErrors.length > 0) {
+    throw new Error(`WordPress setup failed: ${wpSetupErrors.join("; ")}`);
+  }
+
+  if (wpAuthors.length === 0) {
+    throw new Error("Smoke test requires at least one WordPress author for the browser-local signing fixture");
+  }
+  console.log("  Preparing the isolated WordPress browser-local signing fixture");
+  const localSigningFixture = await prepareWordPressLocalSigningFixture(E2E_DIR, wpAuthors[0]);
+  console.log(`  Fixture post ${localSigningFixture.postId}: ${localSigningFixture.editUrl}`);
+
   // Verify
   for (const author of authors) {
-    const pk = await client.getAuthorPublicKey(author.id);
+    const identity = author.directoryIdentities[publisher.id];
+    const pk = await publisherClient.getAuthorPublicKey(identity.authorId!);
     console.log(`  ${author.name}: key=${pk.id.slice(0, 8)}... algo=${pk.algorithm}`);
   }
 

@@ -1,0 +1,10 @@
+**
+!htmltrust-canonicalization/
+!htmltrust-canonicalization/javascript/
+!htmltrust-canonicalization/javascript/**
+htmltrust-canonicalization/javascript/node_modules/
+!htmltrust-server-reference/
+!htmltrust-server-reference/package.json
+!htmltrust-server-reference/package-lock.json
+!htmltrust-server-reference/src/
+!htmltrust-server-reference/src/**

@@ -1,0 +1,9 @@
+**
+!htmltrust-cms-reference/
+!htmltrust-cms-reference/wordpress/
+!htmltrust-cms-reference/wordpress/**
+htmltrust-cms-reference/wordpress/vendor/
+htmltrust-cms-reference/wordpress/.phpunit.result.cache
+!htmltrust-e2e/
+!htmltrust-e2e/scripts/
+!htmltrust-e2e/scripts/wordpress-entrypoint.sh

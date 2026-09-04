@@ -6,12 +6,12 @@ vi.stubGlobal("fetch", mockFetch);
 
 describe("TrustApiClient", () => {
   let client: TrustApiClient;
-  beforeEach(() => { mockFetch.mockReset(); client = new TrustApiClient("http://trust-server:3000", "general-key", "admin-key"); });
+  beforeEach(() => { mockFetch.mockReset(); client = new TrustApiClient("http://trust-directory-alpha:3000", "general-key", "admin-key"); });
 
   it("creates an author with correct headers", async () => {
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ author: { id: "a1", name: "Test" }, authorApiKey: "author-key-1" }) });
     const result = await client.createAuthor({ name: "Test", keyType: "HUMAN", keyAlgorithm: "ED25519" });
-    expect(mockFetch).toHaveBeenCalledWith("http://trust-server:3000/api/authors", {
+    expect(mockFetch).toHaveBeenCalledWith("http://trust-directory-alpha:3000/api/authors", {
       method: "POST", headers: { "Content-Type": "application/json", "X-API-KEY": "general-key" },
       body: JSON.stringify({ name: "Test", keyType: "HUMAN", keyAlgorithm: "ED25519" }),
     });
@@ -31,7 +31,7 @@ describe("TrustApiClient", () => {
         { name: "claim:ContentType", content: "Article" },
       ],
     });
-    expect(mockFetch).toHaveBeenCalledWith("http://trust-server:3000/api/content/sign", expect.objectContaining({
+    expect(mockFetch).toHaveBeenCalledWith("http://trust-directory-alpha:3000/api/content/sign", expect.objectContaining({
       method: "POST", headers: { "Content-Type": "application/json", "X-AUTHOR-API-KEY": "author-key-1" },
     }));
     // Verify the new binding fields are in the request body
@@ -55,13 +55,27 @@ describe("TrustApiClient", () => {
   it("casts a vote", async () => {
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ _id: "v1", voteType: "TRUST" }) });
     await client.vote({ userId: "consumer-1", targetType: "AUTHOR", targetId: "a1", voteType: "TRUST" });
-    expect(mockFetch).toHaveBeenCalledWith("http://trust-server:3000/api/votes", expect.objectContaining({ method: "POST" }));
+    expect(mockFetch).toHaveBeenCalledWith("http://trust-directory-alpha:3000/api/votes", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("casts an exact-keyid vote for a foreign signer", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ voteId: "v2", voteType: "DISTRUST" }) });
+    const signerId = "https://trust-directory-beta.example/keys/name%2Fescaped";
+    await client.voteSigner({ signerId, voteType: "DISTRUST", reason: "conflicting opinion" });
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://trust-directory-alpha:3000/api/directory/signer-votes",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-KEY": "general-key" },
+        body: JSON.stringify({ signerId, voteType: "DISTRUST", reason: "conflicting opinion" }),
+      },
+    );
   });
 
   it("reports a key", async () => {
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ reportId: "r1", status: "PENDING" }) });
     await client.reportKey("key-1", { reason: "MISINFORMATION", details: "Misleading", evidence: "http://example.test" });
-    expect(mockFetch).toHaveBeenCalledWith("http://trust-server:3000/api/directory/keys/key-1/report", expect.objectContaining({ method: "POST" }));
+    expect(mockFetch).toHaveBeenCalledWith("http://trust-directory-alpha:3000/api/directory/keys/key-1/report", expect.objectContaining({ method: "POST" }));
   });
 
   it("gets key reputation", async () => {

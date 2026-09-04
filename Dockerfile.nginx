@@ -1,4 +1,4 @@
-FROM nginx:1.29.1-alpine
+FROM nginx:1.29.1-alpine@sha256:42a516af16b852e33b7682d5ef8acbd5d13fe08fecadc7ed98605ba5e3b26ab8
 
 # Test-only wildcard certificate for the isolated htmltrust Docker network.
 # Browsers in the harness explicitly allow this self-signed certificate.
